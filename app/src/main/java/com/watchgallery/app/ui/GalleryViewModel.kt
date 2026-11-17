@@ -17,7 +17,10 @@ import com.watchgallery.app.edit.ImageEditor
 import com.watchgallery.app.edit.Stroke
 import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.ImageSaver
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -47,11 +50,30 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
-    /** 表冠/编码器累计增量，由 Activity 写入，Compose 收集后驱动缩放/滚动 */
-    private val _crownDelta = MutableStateFlow(0f)
-    val crownDelta: StateFlow<Float> = _crownDelta
+    /**
+     * 表冠增量事件流。
+     *
+     * 注意：这里必须是**事件流（SharedFlow）**而不是可累加的 StateFlow。
+     * 之前用 `_crownDelta.value += delta` 把增量累加成一个总位移，UI 再按
+     * `scrollBy(-crownDelta * 6f)` 滚动相对量 —— 累加值只会越来越大，
+     * 屏幕滚到底后无论怎么转都"没反应"（这正是 OPPO 模式表冠失效的根因）。
+     * 改成每次事件独立投递，UI 收到多少就滚多少。
+     */
+    private val _crownEvents = MutableSharedFlow<Float>(
+        extraBufferCapacity = 64,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val crownEvents: SharedFlow<Float> = _crownEvents
 
-    fun pushCrown(delta: Float) { _crownDelta.value += delta }
+    fun pushCrown(delta: Float) {
+        if (delta != 0f && delta.isFinite()) _crownEvents.tryEmit(delta)
+    }
+
+    /** 表冠诊断：最近一次收到的原始运动事件，设置页实时显示，帮用户判断哪种模式有效 */
+    private val _crownDebug = MutableStateFlow<String?>(null)
+    val crownDebug: StateFlow<String?> = _crownDebug
+
+    fun reportCrownDebug(info: String) { _crownDebug.value = info }
 
     /** 表冠模式（OPPO / 华为三星）与灵敏度，设置页读写 */
     private val _crownMode = MutableStateFlow<CrownMode>(CrownPrefs.load(app).first)
