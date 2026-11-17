@@ -1,0 +1,239 @@
+package com.watchgallery.app.ui
+
+import android.content.Context
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.*
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import com.watchgallery.app.BuildConfig
+import com.watchgallery.app.util.ApkDownloader
+import com.watchgallery.app.util.ApkInstaller
+import com.watchgallery.app.util.ReleaseInfo
+import com.watchgallery.app.util.UpdateChecker
+import kotlinx.coroutines.launch
+
+private sealed class UpdateState {
+    data object Idle : UpdateState()
+    data object Checking : UpdateState()
+    data object UpToDate : UpdateState()
+    data class Found(val info: ReleaseInfo) : UpdateState()
+    data class Downloading(val progress: Float, val info: ReleaseInfo) : UpdateState()
+    data class Ready(val info: ReleaseInfo) : UpdateState()
+    data class Error(val message: String) : UpdateState()
+}
+
+/**
+ * 检查更新页 —— 圆屏安全区布局。
+ * 流程：检查 → 发现新版本 → 下载（进度条）→ 安装按钮。
+ * 安装按钮始终可点，即使上次安装失败也能重试（APK 保留在稳定路径）。
+ */
+@Composable
+fun UpdateScreen(
+    viewModel: GalleryViewModel,
+    isRound: Boolean,
+    onBack: () -> Unit
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var state by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
+
+    // 已有更新包时直接给出「安装」入口，避免安装失败后无法再次安装
+    val existingApk = remember { ApkDownloader.updateApkFile(context) }
+
+    fun checkUpdate() {
+        state = UpdateState.Checking
+        scope.launch {
+            val result = UpdateChecker.check(BuildConfig.GITHUB_OWNER, BuildConfig.GITHUB_REPO)
+            state = result.fold(
+                onSuccess = { info ->
+                    if (UpdateChecker.isNewer(info.versionCode, BuildConfig.VERSION_CODE)) {
+                        UpdateState.Found(info)
+                    } else {
+                        UpdateState.UpToDate
+                    }
+                },
+                onFailure = { UpdateState.Error(it.message ?: "检查失败") }
+            )
+        }
+    }
+
+    fun download(info: ReleaseInfo) {
+        state = UpdateState.Downloading(0f, info)
+        scope.launch {
+            val result = ApkDownloader.download(context, info.apkUrl) { downloaded, total ->
+                val p = if (total > 0) downloaded.toFloat() / total else 0f
+                state = UpdateState.Downloading(p, info)
+            }
+            state = result.fold(
+                onSuccess = { UpdateState.Ready(info) },
+                onFailure = { UpdateState.Error(it.message ?: "下载失败") }
+            )
+        }
+    }
+
+    fun install() {
+        if (existingApk.exists()) ApkInstaller.install(context, existingApk)
+    }
+
+    RoundSafeArea(isRound) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState()),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            UpdateHeader(onBack)
+            Spacer(Modifier.height(8.dp))
+
+            when (val s = state) {
+                UpdateState.Idle -> {
+                    StatusIcon(Icons.Filled.SystemUpdate)
+                    Text("检查新版本", style = MaterialTheme.typography.headlineMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("当前版本 v${BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(16.dp))
+                    PrimaryButton("检查更新") { checkUpdate() }
+                }
+                UpdateState.Checking -> {
+                    CircularProgressIndicator()
+                    Spacer(Modifier.height(12.dp))
+                    Text("正在检查更新…", style = MaterialTheme.typography.titleMedium)
+                }
+                UpdateState.UpToDate -> {
+                    StatusIcon(Icons.Filled.CheckCircle)
+                    Text("已是最新版本", style = MaterialTheme.typography.headlineMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("v${BuildConfig.VERSION_NAME}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(16.dp))
+                    PrimaryButton("再次检查") { checkUpdate() }
+                }
+                is UpdateState.Found -> {
+                    StatusIcon(Icons.Filled.NewReleases)
+                    Text("发现新版本", style = MaterialTheme.typography.headlineMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("v${BuildConfig.VERSION_NAME} → v${s.info.versionName}",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.primary)
+                    if (s.info.releaseNotes.isNotBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        Surface(
+                            color = MaterialTheme.colorScheme.surfaceVariant,
+                            shape = RoundedCornerShape(12.dp)
+                        ) {
+                            Text(
+                                s.info.releaseNotes.take(200),
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.padding(12.dp)
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    PrimaryButton("下载更新") { download(s.info) }
+                }
+                is UpdateState.Downloading -> {
+                    StatusIcon(Icons.Filled.Download)
+                    Text("正在下载 v${s.info.versionName}",
+                        style = MaterialTheme.typography.titleMedium)
+                    Spacer(Modifier.height(12.dp))
+                    LinearProgressIndicator(
+                        progress = { s.progress.coerceIn(0f, 1f) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(10.dp)
+                            .clip(RoundedCornerShape(6.dp))
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text("${(s.progress * 100).toInt()}%",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                is UpdateState.Ready -> {
+                    StatusIcon(Icons.Filled.InstallMobile)
+                    Text("下载完成", style = MaterialTheme.typography.headlineMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text("v${s.info.versionName} 已就绪",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(16.dp))
+                    // 安装按钮始终可点：安装失败返回后可再次点击重装
+                    PrimaryButton("安装") { install() }
+                    Spacer(Modifier.height(8.dp))
+                    Text("若安装失败，可返回后再次点击安装",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center)
+                }
+                is UpdateState.Error -> {
+                    StatusIcon(Icons.Filled.ErrorOutline)
+                    Text("出错了", style = MaterialTheme.typography.headlineMedium)
+                    Spacer(Modifier.height(6.dp))
+                    Text(s.message, style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
+                    Spacer(Modifier.height(16.dp))
+                    // 即使检查/下载失败，只要本地有包也给安装入口
+                    if (existingApk.exists()) {
+                        PrimaryButton("安装已下载的版本") { install() }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    PrimaryButton("重试") { checkUpdate() }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun UpdateHeader(onBack: () -> Unit) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
+        }
+        Spacer(Modifier.width(4.dp))
+        Text("检查更新", style = MaterialTheme.typography.headlineMedium,
+            color = MaterialTheme.colorScheme.onBackground)
+    }
+}
+
+@Composable
+private fun StatusIcon(icon: ImageVector) {
+    Box(
+        Modifier
+            .size(64.dp)
+            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(20.dp)),
+        Alignment.Center
+    ) {
+        Icon(icon, null, tint = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.size(34.dp))
+    }
+    Spacer(Modifier.height(12.dp))
+}
+
+@Composable
+private fun PrimaryButton(text: String, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(50.dp),
+        shape = RoundedCornerShape(14.dp)
+    ) {
+        Text(text, style = MaterialTheme.typography.titleMedium)
+    }
+}
