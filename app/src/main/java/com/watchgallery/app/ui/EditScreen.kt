@@ -81,10 +81,12 @@ fun EditScreen(
         }
     }
 
-    Box(modifier = Modifier
-        .fillMaxSize()
-        .background(MaterialTheme.colorScheme.background)) {
-
+    RoundSafeArea(
+        isRound = isRound,
+        modifier = Modifier.background(MaterialTheme.colorScheme.background),
+        horizontal = if (isRound) 4.dp else 12.dp,
+        vertical = if (isRound) 4.dp else 10.dp
+    ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // 顶栏
             Row(
@@ -208,9 +210,9 @@ fun EditScreen(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(8.dp)
-                    .height(64.dp),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+                    .height(54.dp)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 ToolButton(Icons.Filled.AutoAwesome, "滤镜", tool == EditTool.FILTER) { tool = toggle(tool, EditTool.FILTER) }
@@ -231,19 +233,19 @@ private fun scaleFactor(bmpW: Float, bmpH: Float, viewW: Float, viewH: Float): F
 @Composable
 private fun ToolButton(icon: androidx.compose.ui.graphics.vector.ImageVector,
                        label: String, selected: Boolean, onClick: () -> Unit) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(52.dp)) {
         IconButton(
             onClick = onClick,
             modifier = Modifier
-                .size(44.dp)
+                .size(34.dp)
                 .clip(androidx.compose.foundation.shape.CircleShape)
                 .background(if (selected) MaterialTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.surfaceVariant)
         ) {
             Icon(icon, label, tint = if (selected) MaterialTheme.colorScheme.onPrimary
-            else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
+            else MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(18.dp))
         }
-        Text(label, style = MaterialTheme.typography.labelMedium,
+        Text(label, style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
