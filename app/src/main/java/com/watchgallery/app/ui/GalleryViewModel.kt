@@ -92,11 +92,32 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         refresh()
     }
 
+    /** 最近一次扫描的诊断信息（设置页「扫描诊断」展示） */
+    private val _scanReport = MutableStateFlow(com.watchgallery.app.data.ScanReport())
+    val scanReport: StateFlow<com.watchgallery.app.data.ScanReport> = _scanReport
+
     fun refresh() {
         viewModelScope.launch {
             _isLoading.value = true
-            _photos.value = repo.loadPhotos()
-            _albums.value = repo.loadAlbums()
+            val result = repo.scan()
+            _photos.value = result.photos
+            _albums.value = repo.toAlbums(result.photos)
+            _scanReport.value = result.report
+            _isLoading.value = false
+        }
+    }
+
+    /** 从系统文件选择器导入照片（复制进应用私有目录，之后一定读得到） */
+    fun importPhotos(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _isLoading.value = true
+            val ok = repo.importFromUris(uris)
+            _message.value = if (ok > 0) "已导入 $ok 张照片" else "导入失败"
+            val result = repo.scan()
+            _photos.value = result.photos
+            _albums.value = repo.toAlbums(result.photos)
+            _scanReport.value = result.report
             _isLoading.value = false
         }
     }
