@@ -105,7 +105,7 @@ private fun SettingsMain(
                 SettingRow(
                     icon = Icons.Filled.Info,
                     title = "关于",
-                    subtitle = "相册 v0.1 · 圆屏手表版",
+                    subtitle = "相册 v${com.watchgallery.app.BuildConfig.VERSION_NAME} · 圆屏手表版",
                     onClick = {}
                 )
             }
@@ -123,6 +123,7 @@ private fun CrownSettings(
 ) {
     var mode by remember { mutableStateOf(viewModel.crownMode.value) }
     var speed by remember { mutableFloatStateOf(viewModel.crownSpeed.value) }
+    val debug by viewModel.crownDebug.collectAsState()
 
     fun commit() {
         viewModel.setCrownConfig(mode, speed)
@@ -196,6 +197,33 @@ private fun CrownSettings(
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("快", style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Text("表冠测试", style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.height(4.dp))
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant
+                ),
+                shape = RoundedCornerShape(12.dp)
+            ) {
+                Column(Modifier.fillMaxWidth().padding(10.dp)) {
+                    Text(
+                        "转动表冠，下方若出现数值说明当前模式已能识别；一直显示「未检测到」请换另一模式。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        debug ?: "未检测到表冠事件",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (debug != null) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }
