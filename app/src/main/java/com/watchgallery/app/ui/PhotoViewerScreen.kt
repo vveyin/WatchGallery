@@ -51,11 +51,13 @@ fun PhotoViewerScreen(
         }
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier
             .fillMaxSize()
             .background(Color.Black)
     ) {
+        // 圆屏上左右两端是弧边，控件宽度按屏宽 0.66 收窄，保证完整可见
+        val safeWidth = maxWidth * 0.66f
         if (photo == null) {
             Text("图片不存在", color = Color.White, modifier = Modifier.align(Alignment.Center))
         } else {
@@ -88,24 +90,24 @@ fun PhotoViewerScreen(
                     )
             )
 
-            // 顶部工具条
+            // 顶部工具条（限制在圆屏安全区内，避免左右上角被弧边裁掉）
             Row(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
-                    .fillMaxWidth()
-                    .padding(12.dp),
+                    .widthIn(max = safeWidth)
+                    .padding(top = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                IconButton(onClick = onBack) {
-                    Icon(Icons.Filled.ArrowBack, "返回", tint = Color.White)
+                IconButton(onClick = onBack, modifier = Modifier.size(34.dp)) {
+                    Icon(Icons.Filled.ArrowBack, "返回", tint = Color.White, modifier = Modifier.size(18.dp))
                 }
                 Row {
-                    IconButton(onClick = { scale = (scale + 0.3f).coerceAtMost(6f) }) {
-                        Icon(Icons.Filled.ZoomIn, "放大", tint = Color.White)
+                    IconButton(onClick = { scale = (scale + 0.3f).coerceAtMost(6f) }, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Filled.ZoomIn, "放大", tint = Color.White, modifier = Modifier.size(18.dp))
                     }
-                    IconButton(onClick = { scale = (scale - 0.3f).coerceAtLeast(1f) }) {
-                        Icon(Icons.Filled.ZoomOut, "缩小", tint = Color.White)
+                    IconButton(onClick = { scale = (scale - 0.3f).coerceAtLeast(1f) }, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Filled.ZoomOut, "缩小", tint = Color.White, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -114,8 +116,8 @@ fun PhotoViewerScreen(
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .padding(12.dp),
+                    .widthIn(max = safeWidth)
+                    .padding(bottom = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 if (showInfo) {
@@ -134,22 +136,25 @@ fun PhotoViewerScreen(
                 }
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     FilledTonalIconButton(
                         onClick = { index = (index - 1 + photos.size) % photos.size; scale = 1f; offset = Offset.Zero },
-                        enabled = photos.size > 1
-                    ) { Icon(Icons.Filled.ArrowBack, "上一张") }
+                        enabled = photos.size > 1,
+                        modifier = Modifier.size(36.dp)
+                    ) { Icon(Icons.Filled.ArrowBack, "上一张", modifier = Modifier.size(16.dp)) }
                     FloatingActionButton(
                         onClick = { onEdit(photo) },
-                        containerColor = MaterialTheme.colorScheme.primary
+                        containerColor = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(44.dp)
                     ) {
-                        Icon(Icons.Filled.Edit, "编辑", tint = Color.White)
+                        Icon(Icons.Filled.Edit, "编辑", tint = Color.White, modifier = Modifier.size(20.dp))
                     }
                     FilledTonalIconButton(
                         onClick = { index = (index + 1) % photos.size; scale = 1f; offset = Offset.Zero },
-                        enabled = photos.size > 1
-                    ) { Icon(Icons.Filled.ArrowForward, "下一张") }
+                        enabled = photos.size > 1,
+                        modifier = Modifier.size(36.dp)
+                    ) { Icon(Icons.Filled.ArrowForward, "下一张", modifier = Modifier.size(16.dp)) }
                 }
             }
         }
