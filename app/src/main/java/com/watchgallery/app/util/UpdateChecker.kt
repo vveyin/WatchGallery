@@ -75,17 +75,22 @@ object UpdateChecker {
         }
     }
 
-    /** 解析 0.1 / 0.15 形式：versionCode = 小数部分（1、15） */
+    /**
+     * 从版本号/ tag 提取可比较的序号：0.1 -> 1，0.2 -> 2，0.15 -> 15，0.17 -> 17。
+     *
+     * 注意：绝不能拿 GitHub tag 解析出的序号跟 BuildConfig.VERSION_CODE 比。
+     * APK 的 versionCode 是 0.2=3、0.3=4（比小数部分多 1），两套编号对不上，
+     * 会把 v0.3 误判成"已是最新"。比较双方都必须从 versionName 提取同一套序号。
+     */
+    fun versionNumber(name: String): Int =
+        name.removePrefix("v").trim().split(".").lastOrNull()?.toIntOrNull() ?: 0
+
+    /** 解析 v0.1 / 0.15 形式：versionName 原样，序号由小数部分得出 */
     private fun parseVersion(tag: String): Pair<String, Int> {
-        val parts = tag.split(".")
-        val name = tag
-        val code = if (parts.size >= 2) parts.last().toIntOrNull() ?: 0 else 0
-        return name to code
+        val name = tag.removePrefix("v").trim()
+        return name to versionNumber(name)
     }
 
-    /**
-     * 比较版本：仅比较 versionCode（小数部分递增），例如 0.1 < 0.2 < 0.15。
-     * 返回 true 表示 remote 比 local 新。
-     */
+    /** 返回 true 表示 remote 比 local 新（同一套 versionName 序号比较） */
     fun isNewer(remoteCode: Int, localCode: Int): Boolean = remoteCode > localCode
 }
