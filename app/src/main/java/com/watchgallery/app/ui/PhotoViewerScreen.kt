@@ -24,7 +24,7 @@ import coil.compose.rememberAsyncImagePainter
 import com.watchgallery.app.data.Photo
 
 /**
- * 大图查看器：双指缩放、单指平移、双击复位、左右切换、表冠缩放（通过 crownDelta 参数）。
+ * 大图查看器：双指缩放、单指平移、双击复位、左右切换、表冠缩放（通过 crownEvents 事件流）。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -32,7 +32,7 @@ fun PhotoViewerScreen(
     photos: List<Photo>,
     initialIndex: Int,
     isRound: Boolean,
-    crownDelta: Float,
+    crownEvents: kotlinx.coroutines.flow.Flow<Float> = kotlinx.coroutines.flow.emptyFlow(),
     onBack: () -> Unit,
     onEdit: (Photo) -> Unit
 ) {
@@ -44,10 +44,10 @@ fun PhotoViewerScreen(
     val photo = photos.getOrNull(index)
     var showInfo by remember { mutableStateOf(false) }
 
-    // 表冠缩放
-    LaunchedEffect(crownDelta) {
-        if (crownDelta != 0f) {
-            scale = (scale + crownDelta * 0.01f).coerceIn(1f, 6f)
+    // 表冠缩放：逐条消费增量事件（避免累加值导致缩放失控）
+    LaunchedEffect(crownEvents) {
+        crownEvents.collect { delta ->
+            scale = (scale + delta * 0.01f).coerceIn(1f, 6f)
         }
     }
 
