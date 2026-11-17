@@ -28,7 +28,7 @@ import kotlinx.coroutines.launch
 private sealed class UpdateState {
     data object Idle : UpdateState()
     data object Checking : UpdateState()
-    data object UpToDate : UpdateState()
+    data class UpToDate(val remoteName: String) : UpdateState()
     data class Found(val info: ReleaseInfo) : UpdateState()
     data class Downloading(val progress: Float, val info: ReleaseInfo) : UpdateState()
     data class Ready(val info: ReleaseInfo) : UpdateState()
@@ -59,10 +59,14 @@ fun UpdateScreen(
             val result = UpdateChecker.check(BuildConfig.GITHUB_OWNER, BuildConfig.GITHUB_REPO)
             state = result.fold(
                 onSuccess = { info ->
-                    if (UpdateChecker.isNewer(info.versionCode, BuildConfig.VERSION_CODE)) {
+                    // 两边都从 versionName 取序号，不能拿 tag 的序号比 APK 的 versionCode
+                    if (UpdateChecker.isNewer(
+                            UpdateChecker.versionNumber(info.versionName),
+                            UpdateChecker.versionNumber(BuildConfig.VERSION_NAME)
+                        )) {
                         UpdateState.Found(info)
                     } else {
-                        UpdateState.UpToDate
+                        UpdateState.UpToDate(info.versionName)
                     }
                 },
                 onFailure = { UpdateState.Error(it.message ?: "检查失败") }
@@ -114,11 +118,11 @@ fun UpdateScreen(
                     Spacer(Modifier.height(12.dp))
                     Text("正在检查更新…", style = MaterialTheme.typography.titleMedium)
                 }
-                UpdateState.UpToDate -> {
+                is UpdateState.UpToDate -> {
                     StatusIcon(Icons.Filled.CheckCircle)
                     Text("已是最新版本", style = MaterialTheme.typography.headlineMedium)
                     Spacer(Modifier.height(6.dp))
-                    Text("v${BuildConfig.VERSION_NAME}",
+                    Text("本机 v${BuildConfig.VERSION_NAME} · 线上 v${s.remoteName}",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Spacer(Modifier.height(16.dp))
