@@ -37,7 +37,6 @@ class MainActivity : ComponentActivity() {
     // 表冠模式与灵敏度（生命周期内缓存，避免每帧读 SharedPreferences）
     private var crownMode: CrownMode = CrownMode.OPPO
     private var crownSpeed: Float = 1f
-    private var lastCrownDispatch = 0L
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -90,6 +89,8 @@ class MainActivity : ComponentActivity() {
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         try {
             val amount = scrollAmount(event)
+            // 诊断：记录最近一次带滚动轴的事件，设置页实时显示，帮用户判断哪种模式有效
+            reportDebug(event, amount)
             if (amount != 0f) {
                 dispatchCrown(amount)
                 return true
@@ -97,6 +98,19 @@ class MainActivity : ComponentActivity() {
         } catch (_: Exception) {
         }
         return super.dispatchGenericMotionEvent(event)
+    }
+
+    /** 只记录有滚动轴的 motion 事件，避免触摸噪声刷屏 */
+    private fun reportDebug(event: MotionEvent, amount: Float) {
+        val axes = SCROLL_AXES.toList().mapNotNull { axis: Int ->
+            val v = event.getAxisValue(axis)
+            if (v != 0f && v.isFinite()) "ax$axis=$v" else null
+        }
+        if (axes.isNotEmpty()) {
+            viewModel.reportCrownDebug(
+                "action=${event.action} src=0x${event.source.toString(16)} ${axes.joinToString(" ")} → ${"%.2f".format(amount)}"
+            )
+        }
     }
 
     /** 从通用运动事件抽滚动量，按模式分两条路；返回值已乘灵敏度，0 = 不是表冠事件 */
@@ -110,11 +124,20 @@ class MainActivity : ComponentActivity() {
         return if (scaled.isFinite()) scaled else 0f
     }
 
-    /** OPPO：逐个滚轮轴试，取第一个非零值，不做 action / source 判断（source 位不可靠） */
+    /**
+     * OPPO：逐个滚轮轴试，取第一个非零值，不做 action / source 判断（source 位不可靠）。
+     *
+     * 自适应增益：
+     *   - 真正的 REL_WHEEL 一格是十几到几十，直接用；
+     *   - 但有些"OPPO 模式"的表实际仍是旋转编码器，一格只上报 ±1，
+     *     直接乘灵敏度后滚动量太小、肉眼像没反应。所以 |v| ≤ 2 时按编码器放大。
+     */
     private fun oppoRaw(event: MotionEvent): Float {
         for (axis in SCROLL_AXES) {
             val v = event.getAxisValue(axis)
-            if (v != 0f && v.isFinite()) return v
+            if (v != 0f && v.isFinite()) {
+                return if (abs(v) <= 2f) v * ROTARY_RAW_SCALE else v
+            }
         }
         return 0f
     }
@@ -133,19 +156,27 @@ class MainActivity : ComponentActivity() {
         return v * ROTARY_RAW_SCALE
     }
 
-    /** 方向键 / 音量键兜底（部分表无滚轮事件） */
+    /** 方向键 / 音量键兜底（部分表把表冠映射成按键，无滚轮事件） */
     override fun onKeyDown(keyCode: Int, event: KeyEvent): Boolean {
         when (keyCode) {
-            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_DPAD_UP -> { dispatchCrown(60f * crownSpeed); return true }
-            KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_DPAD_DOWN -> { dispatchCrown(-60f * crownSpeed); return true }
+            KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_DPAD_UP,
+            KeyEvent.KEYCODE_PAGE_UP -> {
+                viewModel.reportCrownDebug("key=$keyCode（表冠映射为按键）")
+                dispatchCrown(3f * crownSpeed)
+                return true
+            }
+            KeyEvent.KEYCODE_VOLUME_DOWN, KeyEvent.KEYCODE_DPAD_DOWN,
+            KeyEvent.KEYCODE_PAGE_DOWN -> {
+                viewModel.reportCrownDebug("key=$keyCode（表冠映射为按键）")
+                dispatchCrown(-3f * crownSpeed)
+                return true
+            }
         }
         return super.onKeyDown(keyCode, event)
     }
 
     private fun dispatchCrown(delta: Float) {
-        val now = System.currentTimeMillis()
-        if (now - lastCrownDispatch < 16) return
-        lastCrownDispatch = now
+        // 事件已是独立增量，直接投递；不再做 16ms 节流（过快转动时会把整格丢掉）
         viewModel.pushCrown(delta)
     }
 
@@ -188,14 +219,14 @@ private fun AppNavigation(
                 android.content.res.Configuration.SCREENLAYOUT_ROUND_YES
     }
 
-    val crownDelta by viewModel.crownDelta.collectAsState()
+    val crownEvents = viewModel.crownEvents
 
     Box(modifier = Modifier.fillMaxSize()) {
         when (screen) {
             is Screen.Gallery -> GalleryScreen(
                 viewModel = viewModel,
                 isRound = isRound,
-                crownDelta = crownDelta,
+                crownEvents = crownEvents,
                 onPhotoClick = { photo ->
                     currentPhoto = photo
                     screen = Screen.Viewer
@@ -209,7 +240,7 @@ private fun AppNavigation(
                     photos = photos,
                     initialIndex = idx,
                     isRound = isRound,
-                    crownDelta = crownDelta,
+                    crownEvents = crownEvents,
                     onBack = { screen = Screen.Gallery },
                     onEdit = { photo ->
                         currentPhoto = photo
