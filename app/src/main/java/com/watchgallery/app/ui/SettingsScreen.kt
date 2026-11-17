@@ -41,7 +41,8 @@ fun SettingsScreen(
             isRound = isRound,
             onBack = onBack,
             onOpenCrown = { subPage = SubPage.Crown },
-            onOpenTheme = { subPage = SubPage.Theme }
+            onOpenTheme = { subPage = SubPage.Theme },
+            onOpenDiag = { subPage = SubPage.Diag }
         )
         SubPage.Crown -> CrownSettings(
             viewModel = viewModel,
@@ -54,10 +55,20 @@ fun SettingsScreen(
             isRound = isRound,
             onBack = { subPage = SubPage.Main }
         )
+        SubPage.Diag -> ScanDiagSettings(
+            viewModel = viewModel,
+            isRound = isRound,
+            onBack = { subPage = SubPage.Main }
+        )
     }
 }
 
-private sealed class SubPage { data object Main : SubPage(); data object Crown : SubPage(); data object Theme : SubPage() }
+private sealed class SubPage {
+    data object Main : SubPage()
+    data object Crown : SubPage()
+    data object Theme : SubPage()
+    data object Diag : SubPage()
+}
 
 /** 设置主页 */
 @Composable
@@ -66,11 +77,13 @@ private fun SettingsMain(
     isRound: Boolean,
     onBack: () -> Unit,
     onOpenCrown: () -> Unit,
-    onOpenTheme: () -> Unit
+    onOpenTheme: () -> Unit,
+    onOpenDiag: () -> Unit
 ) {
     val themeMode by viewModel.themeMode.collectAsState()
     val crownMode by viewModel.crownMode.collectAsState()
     val crownSpeed by viewModel.crownSpeed.collectAsState()
+    val report by viewModel.scanReport.collectAsState()
 
     RoundSafeArea(isRound) {
         Column(Modifier.fillMaxSize()) {
@@ -80,7 +93,7 @@ private fun SettingsMain(
                     .weight(1f)
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(10.dp)
+                verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 SettingRow(
                     icon = Icons.Filled.Cached,
@@ -101,6 +114,12 @@ private fun SettingsMain(
                         else -> "跟随系统"
                     },
                     onClick = onOpenTheme
+                )
+                SettingRow(
+                    icon = Icons.Filled.Search,
+                    title = "扫描诊断",
+                    subtitle = "媒体库 ${report.imagesRows} 条 · 目录 ${report.dirHits} 张 · 导入 ${report.importedCount} 张",
+                    onClick = onOpenDiag
                 )
                 SettingRow(
                     icon = Icons.Filled.Info,
@@ -284,12 +303,12 @@ private fun SettingsHeader(title: String, onBack: () -> Unit) {
         Modifier.fillMaxWidth().padding(bottom = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        IconButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
+        IconButton(onClick = onBack, modifier = Modifier.size(32.dp)) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", modifier = Modifier.size(18.dp))
         }
-        Spacer(Modifier.width(4.dp))
-        Text(title, style = MaterialTheme.typography.headlineMedium,
-            color = MaterialTheme.colorScheme.onBackground)
+        Spacer(Modifier.width(2.dp))
+        Text(title, style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onBackground, maxLines = 1)
     }
 }
 
@@ -303,19 +322,95 @@ private fun SettingRow(icon: ImageVector, title: String, subtitle: String, onCli
         shape = RoundedCornerShape(16.dp)
     ) {
         Row(
-            Modifier.fillMaxWidth().padding(14.dp),
+            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(icon, null, tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(26.dp))
-            Spacer(Modifier.width(12.dp))
+                modifier = Modifier.size(20.dp))
+            Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold)
-                Text(subtitle, style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(title, style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold)
+                Text(subtitle, style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
             }
-            Icon(Icons.Filled.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Icon(Icons.Filled.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(16.dp))
         }
+    }
+}
+
+/**
+ * 扫描诊断子页 —— "相册空白"时用来自证数据到底卡在哪一层：
+ * 权限、媒体库行数、目录命中数、异常信息都在这里。
+ */
+@Composable
+private fun ScanDiagSettings(
+    viewModel: GalleryViewModel,
+    isRound: Boolean,
+    onBack: () -> Unit
+) {
+    val report by viewModel.scanReport.collectAsState()
+    val photos by viewModel.photos.collectAsState()
+
+    RoundSafeArea(isRound) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+        ) {
+            SettingsHeader("扫描诊断", onBack)
+            Text(
+                "共 ${photos.size} 张",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(Modifier.height(6.dp))
+            DiagLine("Android 版本", report.sdk.toString())
+            DiagLine("读取权限", if (report.permissionGranted) "已授予" else "未授予")
+            DiagLine("媒体库(images)", "${report.imagesRows} 条")
+            DiagLine("媒体库(files)", "${report.filesRows} 条")
+            DiagLine("目录直扫", "${report.dirHits} 张")
+            DiagLine("应用内导入", "${report.importedCount} 张")
+            DiagLine("触发系统扫描", if (report.scanTriggered) "已触发" else "未触发")
+
+            if (report.roots.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text("扫描目录", style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary)
+                Text(
+                    report.roots.joinToString("\n"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            if (report.errors.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text("异常", style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.error)
+                Text(
+                    report.errors.distinct().joinToString("\n"),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Button(onClick = { viewModel.refresh() }, modifier = Modifier.fillMaxWidth()) {
+                Text("重新扫描")
+            }
+        }
+    }
+}
+
+@Composable
+private fun DiagLine(label: String, value: String) {
+    Row(
+        Modifier.fillMaxWidth().padding(vertical = 2.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onBackground)
     }
 }
