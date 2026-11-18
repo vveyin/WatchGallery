@@ -74,6 +74,8 @@ fun GalleryScreen(
     val photos by viewModel.photos.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val report by viewModel.scanReport.collectAsState()
+    val visibleCount by viewModel.visibleCount.collectAsState()
+    val totalCount by viewModel.totalCountFlow.collectAsState()
 
     var permissionGranted by remember { mutableStateOf(hasMediaPermission(context)) }
     var needSettings by remember { mutableStateOf(false) }
@@ -144,6 +146,9 @@ fun GalleryScreen(
             else -> ScalingPhotoList(
                 items = photos,
                 crownEvents = crownEvents,
+                hasMore = visibleCount < totalCount,
+                totalCount = totalCount,
+                onLoadMore = { viewModel.loadMore() },
                 onPhotoClick = onPhotoClick
             )
         }
@@ -189,6 +194,9 @@ private fun TopIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, desc:
 private fun ScalingPhotoList(
     items: List<Photo>,
     crownEvents: Flow<Float>,
+    hasMore: Boolean,
+    totalCount: Int,
+    onLoadMore: () -> Unit,
     onPhotoClick: (Photo) -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -209,6 +217,18 @@ private fun ScalingPhotoList(
         }
     }
 
+    // 滑到倒数第二张时预加载下一批
+    val needMore by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
+            hasMore && last >= items.size - 3
+        }
+    }
+    LaunchedEffect(needMore) {
+        if (needMore) onLoadMore()
+    }
+
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         // 让首尾项也能滚到视口中央
         val itemHeight = 112.dp
@@ -220,6 +240,21 @@ private fun ScalingPhotoList(
             verticalArrangement = Arrangement.spacedBy(6.dp),
             contentPadding = PaddingValues(vertical = edgePad)
         ) {
+            if (hasMore) {
+                item(key = "load_more_footer") {
+                    Box(
+                        Modifier.fillMaxWidth().height(44.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            "继续下滑加载更多  ·  已显示 $items.size / $totalCount 张",
+                            fontSize = 10.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.Center
+                        )
+                    }
+                }
+            }
             itemsIndexed(items, key = { _, p -> p.id }) { index, photo ->
                 val itemCenter = layout.first[index]
                 val viewportCenter = layout.second
