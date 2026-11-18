@@ -9,16 +9,15 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -28,6 +27,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
@@ -44,7 +45,6 @@ import com.watchgallery.app.data.Photo
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
-/** 按系统版本取正确的媒体读取权限 */
 private fun mediaPermission(): String =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
         Manifest.permission.READ_MEDIA_IMAGES
@@ -55,14 +55,12 @@ private fun hasMediaPermission(context: android.content.Context): Boolean =
     ContextCompat.checkSelfPermission(context, mediaPermission()) == PackageManager.PERMISSION_GRANTED
 
 /**
- * 相册主界面：标题栏 + 图片网格 + 表冠翻页。
+ * 相册主界面 —— 全屏缩放列表（Wear OS 风格）。
  *
- * 布局要点（0.3 修复）：整屏包在 RoundSafeArea 里。
- * 之前只有标题栏包了安全区，而安全区本身 fillMaxSize —— 放在 Column 里会把
- * 整个剩余高度吃掉，网格高度被压成 0，看起来就是"照片列表是空的"。
- * 现在根节点统一安全区，内部 Column 正常分配：标题 wrap content，网格 weight(1f)。
+ * 不再套圆屏矩形安全区：列表占满整屏，靠「中间大、两边小并淡出」的缩放效果
+ * 自然避开表盘弧边，这就是 Wear OS 原生 ScalingLazyColumn 的观感。
  */
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GalleryScreen(
     viewModel: GalleryViewModel,
@@ -76,9 +74,6 @@ fun GalleryScreen(
     val photos by viewModel.photos.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val report by viewModel.scanReport.collectAsState()
-
-    var selectedAlbum by remember { mutableStateOf<String?>(null) }
-    val albums by viewModel.albums.collectAsState()
 
     var permissionGranted by remember { mutableStateOf(hasMediaPermission(context)) }
     var needSettings by remember { mutableStateOf(false) }
@@ -98,12 +93,15 @@ fun GalleryScreen(
         }
     }
 
-    // 手动导入：系统文件选择器多选图片，内容复制进应用私有目录
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris -> viewModel.importPhotos(uris) }
 
-    // 每次回到前台重新探测权限（从系统设置授权后返回、覆盖安装后权限变化）
+    fun launchImport() {
+        runCatching { importLauncher.launch(arrayOf("image/*")) }
+            .onFailure { hint = "系统没有文件选择器，可将照片放到 Pictures 目录后点重新扫描" }
+    }
+
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -120,251 +118,224 @@ fun GalleryScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    if (!permissionGranted) {
-        RoundSafeArea(
-            isRound = isRound,
-            modifier = Modifier.background(MaterialTheme.colorScheme.background),
-            contentAlignment = Alignment.Center
-        ) {
-            PermissionScreen(
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
+        when {
+            !permissionGranted -> PermissionOverlay(
                 needSettings = needSettings,
                 onRequest = { permissionLauncher.launch(mediaPermission()) },
                 onOpenSettings = { openAppSettings(context) }
             )
-        }
-        return
-    }
-
-    val displayed = remember(photos, selectedAlbum) {
-        if (selectedAlbum == null) photos else photos.filter { it.bucketName == selectedAlbum }
-    }
-
-    val gridState = rememberLazyGridState()
-
-    LaunchedEffect(crownEvents) {
-        crownEvents.collect { delta ->
-            gridState.scroll { scrollBy(-delta * 5f) }
-        }
-    }
-
-    RoundSafeArea(
-        isRound = isRound,
-        modifier = Modifier.background(MaterialTheme.colorScheme.background),
-        horizontal = if (isRound) 4.dp else 12.dp,
-        vertical = if (isRound) 4.dp else 10.dp
-    ) {
-        Column(Modifier.fillMaxSize()) {
-            GalleryHeader(
-                title = selectedAlbum ?: "相册",
-                hasAlbums = albums.size > 1,
-                groupingOn = selectedAlbum != null,
-                onToggleGroup = {
-                    selectedAlbum = if (selectedAlbum == null) albums.firstOrNull()?.name else null
-                },
-                onOpenSettings = onOpenSettings,
-                onCheckUpdate = onCheckUpdate
+            photos.isEmpty() && isLoading -> CircularProgressIndicator(
+                modifier = Modifier.align(Alignment.Center).size(30.dp),
+                color = MaterialTheme.colorScheme.primary, strokeWidth = 2.dp
             )
-            Spacer(Modifier.height(4.dp))
+            photos.isEmpty() -> EmptyOverlay(
+                summary = report.summary,
+                scanCount = "${report.imagesRows}/${report.dirHits}/${report.importedCount}",
+                hint = hint,
+                onRefresh = { viewModel.refresh() },
+                onImport = { launchImport() },
+                onOpenSettings = onOpenSettings
+            )
+            else -> ScalingPhotoList(
+                items = photos,
+                crownEvents = crownEvents,
+                onPhotoClick = onPhotoClick
+            )
+        }
 
-            when {
-                isLoading -> Box(Modifier.fillMaxSize(), Alignment.Center) {
-                    CircularProgressIndicator(
-                        color = MaterialTheme.colorScheme.primary,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(26.dp)
-                    )
-                }
-                displayed.isEmpty() -> EmptyGallery(
-                    report = report.summary,
-                    hint = hint,
-                    onRefresh = { viewModel.refresh() },
-                    onImport = {
-                        runCatching { importLauncher.launch(arrayOf("image/*")) }
-                            .onFailure {
-                                hint = "系统没有文件选择器，可用数据线把照片放到 Pictures 目录后点重新扫描"
-                            }
-                    }
-                )
-                else -> LazyVerticalGrid(
-                    columns = GridCells.Fixed(2),
-                    state = gridState,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(if (isRound) RoundedCornerShape(14.dp) else RoundedCornerShape(8.dp)),
-                    contentPadding = PaddingValues(bottom = 6.dp),
-                    verticalArrangement = Arrangement.spacedBy(5.dp),
-                    horizontalArrangement = Arrangement.spacedBy(5.dp)
-                ) {
-                    items(displayed, key = { it.id }) { photo ->
-                        PhotoThumb(photo) { onPhotoClick(photo) }
-                    }
-                }
-            }
+        // 顶部居中工具条：圆屏顶部中央是可视的，放三个小圆按钮
+        Row(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 8.dp)
+                .clip(RoundedCornerShape(22.dp))
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.82f))
+                .padding(horizontal = 6.dp, vertical = 3.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            TopIcon(Icons.Filled.AddPhotoAlternate, "导入") { launchImport() }
+            TopIcon(Icons.Filled.SystemUpdate, "检查更新") { onCheckUpdate() }
+            TopIcon(Icons.Filled.Settings, "设置") { onOpenSettings() }
         }
     }
 }
 
 @Composable
-private fun GalleryHeader(
-    title: String,
-    hasAlbums: Boolean,
-    groupingOn: Boolean,
-    onToggleGroup: () -> Unit,
-    onOpenSettings: () -> Unit,
-    onCheckUpdate: () -> Unit
-) {
-    var menuOpen by remember { mutableStateOf(false) }
-
-    Row(
-        modifier = Modifier.fillMaxWidth().height(30.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 15.sp,
-            color = MaterialTheme.colorScheme.onBackground,
-            maxLines = 1,
-            modifier = Modifier.weight(1f)
-        )
-        if (hasAlbums) {
-            HeaderIcon(
-                icon = if (groupingOn) Icons.Filled.FolderOpen else Icons.Filled.Folder,
-                desc = "相册分组",
-                onClick = onToggleGroup
-            )
-        }
-        Box {
-            HeaderIcon(
-                icon = Icons.Filled.MoreVert,
-                desc = "更多",
-                onClick = { menuOpen = true }
-            )
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                DropdownMenuItem(
-                    text = { Text("设置", fontSize = 13.sp) },
-                    onClick = { menuOpen = false; onOpenSettings() }
-                )
-                DropdownMenuItem(
-                    text = { Text("检查更新", fontSize = 13.sp) },
-                    onClick = { menuOpen = false; onCheckUpdate() }
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun HeaderIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    desc: String,
-    onClick: () -> Unit
-) {
+private fun TopIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, desc: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
-            .size(28.dp)
+            .size(26.dp)
             .clip(CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Icon(
-            icon,
-            contentDescription = desc,
+        Icon(icon, contentDescription = desc,
             tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(17.dp)
-        )
+            modifier = Modifier.size(15.dp))
     }
 }
 
-@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
+/**
+ * Wear OS 风格的缩放列表：列表项越靠近屏幕中心越大、越靠边缘越小并淡出。
+ * 缩放/透明度在 graphicsLayer 的绘制阶段按滚动位置实时计算，不触发重组。
+ */
 @Composable
-private fun PhotoThumb(photo: Photo, onClick: () -> Unit) {
-    val shape = RoundedCornerShape(13.dp)
-    Box(
-        modifier = Modifier
-            .aspectRatio(1f)
-            .clip(shape)
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.22f), shape)
-            .combinedClickable(onClick = onClick)
+private fun ScalingPhotoList(
+    items: List<Photo>,
+    crownEvents: Flow<Float>,
+    onPhotoClick: (Photo) -> Unit
+) {
+    val listState = rememberLazyListState()
+
+    LaunchedEffect(crownEvents) {
+        crownEvents.collect { delta ->
+            listState.scroll { scrollBy(-delta * 9f) }
+        }
+    }
+
+    // 从 layoutInfo 派生：滚动时可见项位置变化会更新这个状态，进而触发重组，
+    // 让每个卡片的缩放/透明度跟着滚动位置实时变化（Wear OS ScalingLazyColumn 观感）。
+    val layout by remember {
+        derivedStateOf {
+            val info = listState.layoutInfo
+            val centers = info.visibleItemsInfo.associate { it.index to (it.offset + it.size / 2f) }
+            Pair(centers, info.viewportSize.height / 2f)
+        }
+    }
+
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        // 让首尾项也能滚到视口中央
+        val itemHeight = 112.dp
+        val edgePad = ((maxHeight - itemHeight) / 2).coerceAtLeast(20.dp)
+
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            contentPadding = PaddingValues(vertical = edgePad)
+        ) {
+            itemsIndexed(items, key = { _, p -> p.id }) { index, photo ->
+                val itemCenter = layout.first[index]
+                val viewportCenter = layout.second
+                val t = if (itemCenter != null && viewportCenter > 0f) {
+                    (kotlin.math.abs(itemCenter - viewportCenter) /
+                            (viewportCenter * 1.15f)).coerceIn(0f, 1f)
+                } else 0f
+                val s = 1f - 0.42f * t      // 中间 1.0 → 边缘 0.58
+                val a = 1f - 0.72f * t      // 中间 1.0 → 边缘 0.28
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(itemHeight)
+                        .graphicsLayer {
+                            scaleX = s
+                            scaleY = s
+                            alpha = a
+                        }
+                        .clickable { onPhotoClick(photo) }
+                ) {
+                    PhotoCard(photo)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PhotoCard(photo: Photo) {
+    Card(
+        modifier = Modifier.fillMaxSize(),
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant
+        )
     ) {
-        Image(
-            painter = rememberAsyncImagePainter(photo.uri),
-            contentDescription = photo.displayName,
-            contentScale = ContentScale.Crop,
-            modifier = Modifier.fillMaxSize()
-        )
+        Box(Modifier.fillMaxSize()) {
+            Image(
+                painter = rememberAsyncImagePainter(photo.uri),
+                contentDescription = photo.displayName,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .fillMaxWidth()
+                    .height(38.dp)
+                    .background(Color.Black.copy(alpha = 0.55f)),
+                contentAlignment = Alignment.CenterStart
+            ) {
+                Text(
+                    photo.displayName,
+                    color = Color.White,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    modifier = Modifier.padding(horizontal = 12.dp)
+                )
+            }
+        }
     }
 }
 
 @Composable
-private fun EmptyGallery(
-    report: String,
+private fun EmptyOverlay(
+    summary: String,
+    scanCount: String,
     hint: String?,
     onRefresh: () -> Unit,
-    onImport: () -> Unit
+    onImport: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
     Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 2.dp),
+        modifier = Modifier
+            .fillMaxSize()
+            .wrapContentSize(Alignment.Center)
+            .padding(horizontal = 26.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Icon(
-            Icons.Filled.PhotoLibrary,
-            contentDescription = null,
-            modifier = Modifier.size(30.dp),
+            Icons.Filled.PhotoLibrary, null,
+            modifier = Modifier.size(36.dp),
             tint = MaterialTheme.colorScheme.onSurfaceVariant
         )
+        Spacer(Modifier.height(6.dp))
+        Text("没有找到照片", fontWeight = FontWeight.SemiBold,
+            fontSize = 15.sp, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(4.dp))
-        Text(
-            "没有找到照片",
-            fontSize = 13.sp,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onBackground
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            report,
-            fontSize = 9.sp,
-            lineHeight = 12.sp,
+        Text("媒体库/目录/导入：$scanCount\n$summary",
+            fontSize = 10.sp, lineHeight = 13.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            maxLines = 3
-        )
+            textAlign = TextAlign.Center, maxLines = 5)
         hint?.let {
             Spacer(Modifier.height(3.dp))
-            Text(
-                it,
-                fontSize = 9.sp,
-                lineHeight = 11.sp,
-                color = MaterialTheme.colorScheme.error,
-                textAlign = TextAlign.Center
-            )
+            Text(it, fontSize = 10.sp, lineHeight = 12.sp,
+                color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
         }
-        Spacer(Modifier.height(8.dp))
-        Row(
-            horizontalArrangement = Arrangement.spacedBy(6.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Button(
-                onClick = onRefresh,
+        Spacer(Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Button(onClick = onRefresh,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                modifier = Modifier.height(28.dp)
-            ) {
-                Icon(Icons.Filled.Refresh, null, modifier = Modifier.size(13.dp))
+                modifier = Modifier.height(30.dp)) {
+                Icon(Icons.Filled.Refresh, null, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(3.dp))
                 Text("重新扫描", fontSize = 11.sp)
             }
-            OutlinedButton(
-                onClick = onImport,
+            OutlinedButton(onClick = onImport,
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp),
-                modifier = Modifier.height(28.dp)
-            ) {
-                Icon(Icons.Filled.AddPhotoAlternate, null, modifier = Modifier.size(13.dp))
-                Spacer(Modifier.width(3.dp))
-                Text("导入", fontSize = 11.sp)
+                modifier = Modifier.height(30.dp)) {
+                Text("导入照片", fontSize = 11.sp)
             }
+        }
+        Spacer(Modifier.height(2.dp))
+        TextButton(onClick = onOpenSettings, contentPadding = PaddingValues(2.dp)) {
+            Text("权限与扫描诊断", fontSize = 10.sp)
         }
     }
 }
@@ -381,50 +352,31 @@ private fun openAppSettings(context: android.content.Context) {
 }
 
 @Composable
-private fun PermissionScreen(
+private fun PermissionOverlay(
     needSettings: Boolean,
     onRequest: () -> Unit,
     onOpenSettings: () -> Unit
 ) {
     Column(
-        Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxSize().wrapContentSize(Alignment.Center).padding(horizontal = 24.dp),
         verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Icon(
-            Icons.Filled.PhotoLibrary, null,
-            modifier = Modifier.size(34.dp), tint = MaterialTheme.colorScheme.primary
-        )
+        Icon(Icons.Filled.PhotoLibrary, null,
+            modifier = Modifier.size(38.dp), tint = MaterialTheme.colorScheme.primary)
         Spacer(Modifier.height(8.dp))
-        Text(
-            "需要照片权限",
-            fontSize = 14.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onBackground,
-            textAlign = TextAlign.Center
-        )
+        Text("需要照片权限", fontWeight = FontWeight.SemiBold,
+            fontSize = 16.sp, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(4.dp))
         Text(
-            if (needSettings) "权限已被拒绝，请到系统设置里开启「照片/存储」权限"
+            if (needSettings) "权限被拒绝，请到系统设置开启「照片/存储」权限"
             else "用于浏览和编辑手表上的照片",
-            fontSize = 10.sp,
-            lineHeight = 13.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center
+            fontSize = 11.sp, lineHeight = 14.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center
         )
-        Spacer(Modifier.height(10.dp))
-        Button(
-            onClick = if (needSettings) onOpenSettings else onRequest,
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp),
-            modifier = Modifier.height(30.dp)
-        ) {
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = if (needSettings) onOpenSettings else onRequest) {
             Text(if (needSettings) "去设置开启" else "授予权限", fontSize = 12.sp)
-        }
-        if (!needSettings) {
-            Spacer(Modifier.height(2.dp))
-            TextButton(onClick = onOpenSettings, contentPadding = PaddingValues(2.dp)) {
-                Text("打不开？去系统设置", fontSize = 10.sp)
-            }
         }
     }
 }
