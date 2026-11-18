@@ -261,6 +261,7 @@ private fun AppNavigation(
             is Screen.Settings -> SettingsScreen(
                 viewModel = viewModel,
                 isRound = isRound,
+                crownEvents = crownEvents,
                 onBack = { screen = Screen.Gallery },
                 onCrownPrefsChanged = onCrownPrefsChanged
             )
