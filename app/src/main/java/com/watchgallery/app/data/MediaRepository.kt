@@ -113,10 +113,14 @@ class MediaRepository(private val context: Context) {
             }
         }
 
-        // 4) 目录直扫（能读到就读，读不到静默跳过）
-        val dirPhotos = scanCommonDirs(errors)
-        dirHits = dirPhotos.size
-        addAll(dirPhotos)
+        // 4) 目录直扫仅作兜底：MediaStore 已经有照片时跳过。
+        //    遍历整个存储目录（几千个文件逐个 stat）非常慢，是"主页一直转圈"的元凶。
+        //    只有在前三级一个都没查到时才值得做这一步。
+        if (collected.isEmpty()) {
+            val dirPhotos = scanCommonDirs(errors)
+            dirHits = dirPhotos.size
+            addAll(dirPhotos)
+        }
 
         // 5) 应用内导入目录，永远不会失败
         val imported = scanImported()
