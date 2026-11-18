@@ -1,7 +1,9 @@
 package com.watchgallery.app.ui
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -21,6 +23,7 @@ import androidx.compose.ui.unit.dp
 import com.watchgallery.app.data.CrownMode
 import com.watchgallery.app.data.CrownPrefs
 import com.watchgallery.app.theme.ThemeMode
+import kotlinx.coroutines.flow.Flow
 
 /**
  * 设置页 —— 圆屏安全区内布局，分主菜单与「表冠适配」子页。
@@ -30,6 +33,7 @@ import com.watchgallery.app.theme.ThemeMode
 fun SettingsScreen(
     viewModel: GalleryViewModel,
     isRound: Boolean,
+    crownEvents: Flow<Float>,
     onBack: () -> Unit,
     onCrownPrefsChanged: () -> Unit
 ) {
@@ -39,6 +43,7 @@ fun SettingsScreen(
         SubPage.Main -> SettingsMain(
             viewModel = viewModel,
             isRound = isRound,
+            crownEvents = crownEvents,
             onBack = onBack,
             onOpenCrown = { subPage = SubPage.Crown },
             onOpenTheme = { subPage = SubPage.Theme },
@@ -47,17 +52,20 @@ fun SettingsScreen(
         SubPage.Crown -> CrownSettings(
             viewModel = viewModel,
             isRound = isRound,
+            crownEvents = crownEvents,
             onBack = { subPage = SubPage.Main },
             onPrefsChanged = onCrownPrefsChanged
         )
         SubPage.Theme -> ThemeSettings(
             viewModel = viewModel,
             isRound = isRound,
+            crownEvents = crownEvents,
             onBack = { subPage = SubPage.Main }
         )
         SubPage.Diag -> ScanDiagSettings(
             viewModel = viewModel,
             isRound = isRound,
+            crownEvents = crownEvents,
             onBack = { subPage = SubPage.Main }
         )
     }
@@ -75,6 +83,7 @@ private sealed class SubPage {
 private fun SettingsMain(
     viewModel: GalleryViewModel,
     isRound: Boolean,
+    crownEvents: Flow<Float>,
     onBack: () -> Unit,
     onOpenCrown: () -> Unit,
     onOpenTheme: () -> Unit,
@@ -92,7 +101,7 @@ private fun SettingsMain(
                 Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberCrownScrollState(crownEvents)),
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 SettingRow(
@@ -137,6 +146,7 @@ private fun SettingsMain(
 private fun CrownSettings(
     viewModel: GalleryViewModel,
     isRound: Boolean,
+    crownEvents: Flow<Float>,
     onBack: () -> Unit,
     onPrefsChanged: () -> Unit
 ) {
@@ -153,7 +163,7 @@ private fun CrownSettings(
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberCrownScrollState(crownEvents))
         ) {
             SettingsHeader("表冠适配", onBack)
             Spacer(Modifier.height(4.dp))
@@ -253,6 +263,7 @@ private fun CrownSettings(
 private fun ThemeSettings(
     viewModel: GalleryViewModel,
     isRound: Boolean,
+    crownEvents: Flow<Float>,
     onBack: () -> Unit
 ) {
     val current by viewModel.themeMode.collectAsState()
@@ -265,7 +276,7 @@ private fun ThemeSettings(
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberCrownScrollState(crownEvents))
         ) {
             SettingsHeader("主题", onBack)
             Spacer(Modifier.height(8.dp))
@@ -348,6 +359,7 @@ private fun SettingRow(icon: ImageVector, title: String, subtitle: String, onCli
 private fun ScanDiagSettings(
     viewModel: GalleryViewModel,
     isRound: Boolean,
+    crownEvents: Flow<Float>,
     onBack: () -> Unit
 ) {
     val report by viewModel.scanReport.collectAsState()
@@ -357,7 +369,7 @@ private fun ScanDiagSettings(
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState())
+                .verticalScroll(rememberCrownScrollState(crownEvents))
         ) {
             SettingsHeader("扫描诊断", onBack)
             Text(
@@ -413,4 +425,16 @@ private fun DiagLine(label: String, value: String) {
         Text(value, style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onBackground)
     }
+}
+
+/** 表冠可滚动的 ScrollState：收到表冠增量就滚动对应距离，转多少滚多少 */
+@Composable
+private fun rememberCrownScrollState(crownEvents: Flow<Float>): ScrollState {
+    val state = rememberScrollState()
+    LaunchedEffect(crownEvents) {
+        crownEvents.collect { delta ->
+            state.scrollBy(-delta * 8f)
+        }
+    }
+    return state
 }
