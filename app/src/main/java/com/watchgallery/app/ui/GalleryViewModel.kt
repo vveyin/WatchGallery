@@ -29,6 +29,17 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val repo = MediaRepository(app)
     private val prefs = app.getSharedPreferences("watch_gallery", Context.MODE_PRIVATE)
 
+    /** 完整扫描结果（供大图翻页用），不直接给列表渲染 */
+    private val allPhotos = MutableStateFlow<List<Photo>>(emptyList())
+
+    /** 每页条数 */
+    private val pageSize = 30
+
+    /** 当前列表已显示的条数：先显示前 30 张，滑到底再追加 */
+    private val _visibleCount = MutableStateFlow(pageSize)
+    val visibleCount: StateFlow<Int> = _visibleCount
+
+    /** 列表可见的照片（分页切片） */
     private val _photos = MutableStateFlow<List<Photo>>(emptyList())
     val photos: StateFlow<List<Photo>> = _photos
 
@@ -100,11 +111,23 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _isLoading.value = true
             val result = repo.scan()
-            _photos.value = result.photos
+            allPhotos.value = result.photos
+            _visibleCount.value = pageSize
+            _photos.value = result.photos.take(pageSize)
             _albums.value = repo.toAlbums(result.photos)
             _scanReport.value = result.report
             _isLoading.value = false
         }
+    }
+
+    /** 滑到列表底部时追加下一批，避免一次性渲染全部照片 */
+    fun loadMore() {
+        val total = allPhotos.value.size
+        val current = _visibleCount.value
+        if (current >= total) return
+        val next = (current + pageSize).coerceAtMost(total)
+        _visibleCount.value = next
+        _photos.value = allPhotos.value.take(next)
     }
 
     /** 从系统文件选择器导入照片（复制进应用私有目录，之后一定读得到） */
@@ -115,7 +138,9 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             val ok = repo.importFromUris(uris)
             _message.value = if (ok > 0) "已导入 $ok 张照片" else "导入失败"
             val result = repo.scan()
-            _photos.value = result.photos
+            allPhotos.value = result.photos
+            _visibleCount.value = pageSize
+            _photos.value = result.photos.take(pageSize)
             _albums.value = repo.toAlbums(result.photos)
             _scanReport.value = result.report
             _isLoading.value = false
@@ -173,6 +198,16 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 _message.value = "保存失败：${e.message}"
                 onDone(false)
             }
+        }
+    }
+
+    /** 大图翻页用的完整列表（不受分页显示条数影响） */
+    val allPhotosFlow: StateFlow<List<Photo>> = allPhotos
+
+    /** 照片总数（列表判断能否加载更多） */
+    val totalCountFlow: StateFlow<Int> = MutableStateFlow(0).also { total ->
+        viewModelScope.launch {
+            allPhotos.collect { total.value = it.size }
         }
     }
 
