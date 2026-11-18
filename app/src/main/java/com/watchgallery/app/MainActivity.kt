@@ -210,7 +210,8 @@ private fun AppNavigation(
 ) {
     var screen by remember { mutableStateOf<Screen>(Screen.Gallery) }
     var currentPhoto by remember { mutableStateOf<Photo?>(null) }
-    val photos by viewModel.photos.collectAsState()
+    // 大图翻页用完整列表（不受主页分页显示条数影响）
+    val photos by viewModel.allPhotosFlow.collectAsState()
 
     val context = LocalContext.current
     val isRound = remember {
