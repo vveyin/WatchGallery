@@ -255,7 +255,7 @@ private fun ScalingPhotoList(
                     }
                 }
             }
-            itemsIndexed(items, key = { _, p -> p.id }) { index, photo ->
+            itemsIndexed(items, key = { _, p -> p.uri.toString() }) { index, photo ->
                 val itemCenter = layout.first[index]
                 val viewportCenter = layout.second
                 val t = if (itemCenter != null && viewportCenter > 0f) {
