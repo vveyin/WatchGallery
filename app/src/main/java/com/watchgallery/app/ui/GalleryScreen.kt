@@ -207,16 +207,6 @@ private fun ScalingPhotoList(
         }
     }
 
-    // 从 layoutInfo 派生：滚动时可见项位置变化会更新这个状态，进而触发重组，
-    // 让每个卡片的缩放/透明度跟着滚动位置实时变化（Wear OS ScalingLazyColumn 观感）。
-    val layout by remember {
-        derivedStateOf {
-            val info = listState.layoutInfo
-            val centers = info.visibleItemsInfo.associate { it.index to (it.offset + it.size / 2f) }
-            Pair(centers, info.viewportSize.height / 2f)
-        }
-    }
-
     // 滑到倒数第二张时预加载下一批
     val needMore by remember {
         derivedStateOf {
@@ -256,22 +246,24 @@ private fun ScalingPhotoList(
                 }
             }
             itemsIndexed(items, key = { _, p -> p.uri.toString() }) { index, photo ->
-                val itemCenter = layout.first[index]
-                val viewportCenter = layout.second
-                val t = if (itemCenter != null && viewportCenter > 0f) {
-                    (kotlin.math.abs(itemCenter - viewportCenter) /
-                            (viewportCenter * 1.15f)).coerceIn(0f, 1f)
-                } else 0f
-                val s = 1f - 0.42f * t      // 中间 1.0 → 边缘 0.58
-                val a = 1f - 0.72f * t      // 中间 1.0 → 边缘 0.28
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(itemHeight)
                         .graphicsLayer {
-                            scaleX = s
-                            scaleY = s
-                            alpha = a
+                            // 锚点固定为屏幕中心（恒定），每帧按"到中心的距离"算缩放，
+                            // 与可见项增删无关，滚动完全连续，不会突然从小变大。
+                            val info = listState.layoutInfo
+                            val anchor = info.viewportSize.height / 2f
+                            val mine = info.visibleItemsInfo.firstOrNull { it.index == index }
+                            if (mine != null && anchor > 0f) {
+                                val center = mine.offset + mine.size / 2f
+                                val t = (kotlin.math.abs(center - anchor) / anchor).coerceIn(0f, 1f)
+                                val sc = 1.12f - 0.56f * t   // 中心 1.12（最大）→ 边缘 0.56
+                                scaleX = sc
+                                scaleY = sc
+                                alpha = 1f - 0.72f * t       // 中心 1.0 → 边缘 0.28
+                            }
                         }
                         .clickable { onPhotoClick(photo) }
                 ) {
