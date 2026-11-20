@@ -254,7 +254,7 @@ private fun CrownSettings(
             item(key = "crown_mode_${m.name}") {
                 val mk = "crown_mode_${m.name}"
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    val btnMod = Modifier.fillMaxWidth(0.74f).height(42.dp).scalingItem(mk)
+                    val btnMod = Modifier.fillMaxWidth(0.64f).height(42.dp).scalingItem(mk)
                     val selected = mode == m
                     if (selected) {
                         Button(onClick = { mode = m; commit() }, modifier = btnMod) {
@@ -329,7 +329,7 @@ private fun ThemeSettings(
             item(key = "theme_${mode.name}") {
                 val mk = "theme_${mode.name}"
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    val btnMod = Modifier.fillMaxWidth(0.74f).height(42.dp).scalingItem(mk)
+                    val btnMod = Modifier.fillMaxWidth(0.64f).height(42.dp).scalingItem(mk)
                     val selected = current == mode
                     if (selected) {
                         Button(onClick = { viewModel.setThemeMode(mode) }, modifier = btnMod) {
@@ -362,8 +362,8 @@ private fun SettingButton(
         Button(
             onClick = onClick,
             modifier = Modifier
-                .fillMaxWidth(0.74f)
-                .height(50.dp)
+                .fillMaxWidth(0.64f)
+                .height(46.dp)
                 .scalingItem(itemKey),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
         ) {
@@ -446,7 +446,7 @@ private fun ScanDiagSettings(
         item(key = "diag_rescan") {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Button(onClick = { viewModel.refresh() },
-                    modifier = Modifier.fillMaxWidth(0.74f).height(42.dp).scalingItem("diag_rescan")) {
+                    modifier = Modifier.fillMaxWidth(0.64f).height(42.dp).scalingItem("diag_rescan")) {
                     Text("重新扫描")
                 }
             }

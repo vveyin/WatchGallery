@@ -247,6 +247,7 @@ private fun AppNavigation(
     val backStack = remember { mutableStateListOf<Screen>(Screen.Gallery) }
     var currentPhoto by remember { mutableStateOf<Photo?>(null) }
     val photos by viewModel.allPhotosFlow.collectAsState()
+    val selectionMode by viewModel.selectionMode.collectAsState()
 
     val context = LocalContext.current
     val isRound = remember {
@@ -347,7 +348,7 @@ private fun AppNavigation(
             drawerOffset = drawerOffset,
             collapsedY = collapsedY,
             canDragDown = settingsAtRoot,
-            enabled = !settingsOpen && current is Screen.Gallery,
+            enabled = !settingsOpen && current is Screen.Gallery && !selectionMode,
             onOpened = { settingsOpen = true },
             onClosed = { settingsOpen = false }
         ) {

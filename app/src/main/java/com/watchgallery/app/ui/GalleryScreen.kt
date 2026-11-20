@@ -11,7 +11,10 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -19,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.material.icons.Icons
@@ -27,9 +31,15 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -79,6 +89,8 @@ fun GalleryScreen(
     val visibleCount by viewModel.visibleCount.collectAsState()
     val totalCount by viewModel.totalCountFlow.collectAsState()
     val gridColumns by viewModel.gridColumns.collectAsState()
+    val selectionMode by viewModel.selectionMode.collectAsState()
+    val selectedUris by viewModel.selectedUris.collectAsState()
 
     var permissionGranted by remember { mutableStateOf(hasMediaPermission(context)) }
     var needSettings by remember { mutableStateOf(false) }
@@ -152,11 +164,27 @@ fun GalleryScreen(
                 crownEvents = crownEvents,
                 hasMore = visibleCount < totalCount,
                 totalCount = totalCount,
+                selectionMode = selectionMode,
+                selectedUris = selectedUris,
                 onLoadMore = { viewModel.loadMore() },
-                onPhotoClick = onPhotoClick
+                onPhotoClick = onPhotoClick,
+                onLongPress = { viewModel.enterSelectionMode(it) },
+                onToggle = { viewModel.toggleSelected(it) },
+                onSelectRange = { viewModel.addSelected(it) },
+                onCancelSelection = { viewModel.exitSelectionMode() },
+                onDeleteSelected = { viewModel.deleteSelected() }
             )
         }
 
+        // 多选模式：底部操作栏（覆盖在网格之上）
+        if (selectionMode) {
+            SelectionBar(
+                selectedCount = selectedUris.size,
+                onDelete = { viewModel.deleteSelected() },
+                onCancel = { viewModel.exitSelectionMode() },
+                modifier = Modifier.align(Alignment.BottomCenter)
+            )
+        }
     }
 }
 
@@ -171,13 +199,25 @@ private fun ScalingPhotoList(
     crownEvents: Flow<Float>,
     hasMore: Boolean,
     totalCount: Int,
+    selectionMode: Boolean,
+    selectedUris: Set<String>,
     onLoadMore: () -> Unit,
-    onPhotoClick: (Photo) -> Unit
+    onPhotoClick: (Photo) -> Unit,
+    onLongPress: (String) -> Unit,
+    onToggle: (String) -> Unit,
+    onSelectRange: (Collection<String>) -> Unit,
+    onCancelSelection: () -> Unit,
+    onDeleteSelected: () -> Unit
 ) {
     val gridState = rememberLazyGridState()
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
+
+    // 每张照片的屏幕矩形（px），供滑动框选判定命中用。key = uri 字符串。
+    val cellRects = remember { mutableMapOf<String, Rect>() }
+    // 当前框选矩形（拖动预览），null 表示未在框选
+    var selectionRect by remember { mutableStateOf<Rect?>(null) }
 
     // 表冠平滑滚动：离散事件累加成目标位移后逐帧逼近，避免一格一格的顿挫
     SmoothCrownScroll(crownEvents) { step ->
@@ -202,6 +242,7 @@ private fun ScalingPhotoList(
             state = gridState,
             columns = GridCells.Fixed(columns),
             modifier = Modifier.fillMaxSize(),
+            userScrollEnabled = !selectionMode,
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = edgePad),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -212,15 +253,20 @@ private fun ScalingPhotoList(
                 val rowCenterY = remember { mutableFloatStateOf(-1f) }
                 val leftX = remember { mutableFloatStateOf(0f) }
                 val cellWidth = remember { mutableFloatStateOf(1f) }
+                val measured = remember { mutableStateOf(false) }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(1f)
                         .onGloballyPositioned { coords ->
                             val pos = coords.positionInRoot()
-                            rowCenterY.floatValue = pos.y + coords.size.height / 2f
+                            val w = coords.size.width.toFloat()
+                            val h = coords.size.height.toFloat()
+                            rowCenterY.floatValue = pos.y + h / 2f
                             leftX.floatValue = pos.x
-                            cellWidth.floatValue = coords.size.width.toFloat().coerceAtLeast(1f)
+                            cellWidth.floatValue = w.coerceAtLeast(1f)
+                            measured.value = true
+                            cellRects[photo.uri.toString()] = Rect(pos.x, pos.y, pos.x + w, pos.y + h)
                         }
                         .graphicsLayer {
                             gridState.firstVisibleItemIndex
@@ -228,17 +274,20 @@ private fun ScalingPhotoList(
 
                             val cy = rowCenterY.floatValue
                             val viewportCenter = screenHeightPx / 2f
-                            if (cy >= 0f && viewportCenter > 0f) {
+                            // 关键：只要测量过就始终计算缩放，不再用 cy>=0 判断。
+                            // 照片滚出屏幕顶部后 cy 会变负；旧代码此时跳过缩放、scale 恢复
+                            // 默认 1.0，比周围缩小的照片大，看起来「突然变大」。
+                            // 现在 cy 为负时 distance 更大、t 被 clamp 到 1，稳定停在最小缩放。
+                            if (measured.value && viewportCenter > 0f) {
                                 val distance = kotlin.math.abs(cy - viewportCenter)
-                                // 用真实屏幕坐标：正中间那一排最大，上下渐小淡出。
-                                // 缩放只由「行」的 Y 决定 —— 同一排的每张照片得到完全相同的 sc。
-                                val radius = viewportCenter * 0.9f
+                                // 退出半径加大到 1.05×半屏，让顶部渐隐更平缓，不会到边缘突变。
+                                val radius = viewportCenter * 1.05f
                                 val t = (distance / radius).coerceIn(0f, 1f)
                                 val eased = t * t
                                 val sc = 1.10f - 0.32f * eased   // 正中 1.10 → 边缘 0.78
                                 scaleX = sc
                                 scaleY = sc
-                                alpha = 1f - 0.5f * t
+                                alpha = 1f - 0.55f * t
                                 // 锚点统一到屏幕水平中线：同排照片围绕同一条竖线缩放，
                                 // 间距随缩放同步变化，视觉上整排连在一起。
                                 transformOrigin = TransformOrigin(
@@ -247,9 +296,20 @@ private fun ScalingPhotoList(
                                 )
                             }
                         }
-                        .clickable { onPhotoClick(photo) }
+                        .then(
+                            if (selectionMode) Modifier
+                            else Modifier.pointerInput(photo.uri.toString()) {
+                                detectTapGestures(
+                                    onLongPress = { onLongPress(photo.uri.toString()) },
+                                    onTap = { onPhotoClick(photo) }
+                                )
+                            }
+                        )
                 ) {
                     PhotoCard(photo)
+                    if (selectionMode) {
+                        SelectionCheck(checked = photo.uri.toString() in selectedUris)
+                    }
                 }
             }
             if (hasMore) {
@@ -265,6 +325,71 @@ private fun ScalingPhotoList(
                             textAlign = TextAlign.Center
                         )
                     }
+                }
+            }
+        }
+
+        // 多选模式下的框选覆盖层：捕获拖动，按矩形选中范围内所有照片。
+        if (selectionMode) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            down.consume()
+                            var start = down.position
+                            var moved = false
+                            var tapped = true
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.all { !it.pressed }) break
+                                val change = event.changes.first()
+                                change.consume()
+                                val cur = change.position
+                                if ((cur - start).getDistance() > 12f) {
+                                    moved = true
+                                    tapped = false
+                                }
+                                if (moved) {
+                                    // 手机相册同款：起点→当前点形成矩形，矩形内所有照片选中。
+                                    val rect = Rect(
+                                        kotlin.math.min(start.x, cur.x),
+                                        kotlin.math.min(start.y, cur.y),
+                                        kotlin.math.max(start.x, cur.x),
+                                        kotlin.math.max(start.y, cur.y)
+                                    )
+                                    selectionRect = rect
+                                    val inside = cellRects.filter { (_, cellRect) ->
+                                        val c = cellRect.center
+                                        c.x in rect.left..rect.right && c.y in rect.top..rect.bottom
+                                    }.keys.toList()
+                                    onSelectRange(inside)
+                                }
+                            }
+                            // 抬起：未移动视为单击 —— 判断落点所在 cell 并切换选中
+                            if (tapped) {
+                                val hit = cellRects.entries.firstOrNull { (_, r) ->
+                                    start.x in r.left..r.right && start.y in r.top..r.bottom
+                                }?.key
+                                if (hit != null) onToggle(hit)
+                            }
+                            selectionRect = null
+                        }
+                    }
+            ) {
+                // 框选矩形的可视化边框
+                selectionRect?.let { r ->
+                    Box(
+                        Modifier
+                            .offset { IntOffset(r.left.toInt(), r.top.toInt()) }
+                            .size(
+                                with(density) { (r.right - r.left).coerceAtLeast(1f).toDp() },
+                                with(density) { (r.bottom - r.top).coerceAtLeast(1f).toDp() }
+                            )
+                            .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp))
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
+                    )
                 }
             }
         }
@@ -303,6 +428,78 @@ private fun PhotoCard(photo: Photo) {
                     modifier = Modifier.padding(horizontal = 8.dp)
                 )
             }
+        }
+    }
+}
+
+/** 照片右上角的复选圈：选中实心对勾，未选中空心圈 */
+@Composable
+private fun BoxScope.SelectionCheck(checked: Boolean) {
+    Box(
+        modifier = Modifier
+            .align(Alignment.TopEnd)
+            .padding(5.dp)
+            .size(22.dp)
+            .clip(CircleShape)
+            .background(
+                if (checked) MaterialTheme.colorScheme.primary
+                else Color.Black.copy(alpha = 0.45f)
+            )
+            .then(
+                if (!checked) Modifier.border(1.5.dp, Color.White.copy(alpha = 0.9f), CircleShape)
+                else Modifier
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        if (checked) {
+            Icon(
+                Icons.Filled.Check,
+                contentDescription = "已选中",
+                tint = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier.size(15.dp)
+            )
+        }
+    }
+}
+
+/** 多选模式底部操作栏：已选数量 + 较小的删除按钮 + 取消 */
+@Composable
+private fun SelectionBar(
+    selectedCount: Int,
+    onDelete: () -> Unit,
+    onCancel: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .background(
+                MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+                RoundedCornerShape(24.dp)
+            )
+            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.3f), RoundedCornerShape(24.dp))
+            .padding(horizontal = 12.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Text("已选 $selectedCount 张", fontSize = 11.sp,
+            color = MaterialTheme.colorScheme.onSurface)
+        Button(
+            onClick = onDelete,
+            enabled = selectedCount > 0,
+            modifier = Modifier.height(30.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+        ) {
+            Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
+            Spacer(Modifier.width(4.dp))
+            Text("删除", fontSize = 11.sp)
+        }
+        OutlinedButton(
+            onClick = onCancel,
+            modifier = Modifier.height(30.dp),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+        ) {
+            Text("取消", fontSize = 11.sp)
         }
     }
 }

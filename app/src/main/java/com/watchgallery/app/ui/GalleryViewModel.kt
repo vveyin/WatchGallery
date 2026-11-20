@@ -73,6 +73,53 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
+    // ── 多选状态 ──
+    /** 是否处于多选模式 */
+    private val _selectionMode = MutableStateFlow(false)
+    val selectionMode: StateFlow<Boolean> = _selectionMode
+
+    /** 已选中的照片 uri 集合 */
+    private val _selectedUris = MutableStateFlow<Set<String>>(emptySet())
+    val selectedUris: StateFlow<Set<String>> = _selectedUris
+
+    fun enterSelectionMode(uri: String) {
+        _selectionMode.value = true
+        _selectedUris.value = setOf(uri)
+    }
+
+    fun exitSelectionMode() {
+        _selectionMode.value = false
+        _selectedUris.value = emptySet()
+    }
+
+    fun toggleSelected(uri: String) {
+        val cur = _selectedUris.value
+        _selectedUris.value = if (uri in cur) cur - uri else cur + uri
+    }
+
+    fun setSelected(uris: Collection<String>) {
+        _selectedUris.value = uris.toSet()
+    }
+
+    /** 在已有选择基础上追加（用于滑动框选，不清除之前选中的） */
+    fun addSelected(uris: Collection<String>) {
+        _selectedUris.value = _selectedUris.value + uris
+    }
+
+    /** 删除选中的照片，成功后退出多选并刷新 */
+    fun deleteSelected(onDone: (Int) -> Unit = {}) {
+        viewModelScope.launch {
+            val uris = _selectedUris.value
+            if (uris.isEmpty()) { onDone(0); return@launch }
+            val toDelete = allPhotos.value.filter { it.uri.toString() in uris }
+            val ok = repo.deletePhotos(toDelete)
+            _message.value = if (ok > 0) "已删除 $ok 张照片" else "删除失败（系统照片可能无删除权限）"
+            exitSelectionMode()
+            refresh()
+            onDone(ok)
+        }
+    }
+
     /**
      * 表冠增量事件流。
      *

@@ -9,6 +9,7 @@ import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
@@ -67,19 +68,23 @@ fun Modifier.scalingItem(key: String, scale: Boolean = true): Modifier {
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val centerY = remember(key) { mutableFloatStateOf(-1f) }
+    val measured = remember(key) { mutableStateOf(false) }
 
     return this
         .onGloballyPositioned { coords ->
             val pos = coords.positionInRoot()
             centerY.floatValue = pos.y + coords.size.height / 2f
+            measured.value = true
         }
         .graphicsLayer {
             val cy = centerY.floatValue
             val vc = screenHeightPx / 2f
-            if (cy >= 0f && vc > 0f) {
-                val t = (abs(cy - vc) / (vc * 0.9f)).coerceIn(0f, 1f)
+            // 与照片列表同理：测量过就始终计算，避免滚出屏幕后 cy<0 跳过缩放
+            // 导致 scale 恢复 1.0「突然变大」。
+            if (measured.value && vc > 0f) {
+                val t = (abs(cy - vc) / (vc * 1.05f)).coerceIn(0f, 1f)
                 if (scale) {
-                    val s = 1.38f - 0.58f * (t * t)   // 居中 1.38 → 边缘 0.80
+                    val s = 1.30f - 0.45f * (t * t)   // 居中 1.30 → 边缘 0.85
                     scaleX = s
                     scaleY = s
                 }

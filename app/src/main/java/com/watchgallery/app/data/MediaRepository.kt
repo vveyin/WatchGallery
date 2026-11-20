@@ -435,6 +435,29 @@ class MediaRepository(private val context: Context) {
         ok
     }
 
+    /**
+     * 删除一组照片。MediaStore 记录用 ContentResolver.delete（带 _ID），
+     * 应用私有导入目录的文件直接删 File。返回成功删除的张数。
+     */
+    suspend fun deletePhotos(photos: List<Photo>): Int = withContext(Dispatchers.IO) {
+        var ok = 0
+        photos.forEach { photo ->
+            try {
+                val deleted = when {
+                    photo.uri.scheme == "content" ->
+                        context.contentResolver.delete(photo.uri, null, null) > 0
+                    photo.uri.scheme == "file" ->
+                        File(photo.uri.path ?: "").let { it.exists() && it.delete() }
+                    else -> false
+                }
+                if (deleted) ok++
+            } catch (_: Exception) {
+                // 系统照片可能无删除权限（如只读卷），跳过即可
+            }
+        }
+        ok
+    }
+
     suspend fun loadPhotos(): List<Photo> = scan().photos
 
     /** 由已扫描结果直接分组，避免重复扫盘 */
