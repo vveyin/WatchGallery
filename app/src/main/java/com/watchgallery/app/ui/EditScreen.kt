@@ -94,8 +94,8 @@ fun EditScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                IconButton(onClick = onBack) { Icon(Icons.Filled.Close, "关闭") }
-                Text("编辑", style = MaterialTheme.typography.titleLarge,
+                // 返回/关闭改为边缘右划手势
+                Text("编辑", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
                 IconButton(onClick = {
                     val bmp = sourceBitmap ?: return@IconButton
