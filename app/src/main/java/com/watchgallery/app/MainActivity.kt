@@ -161,17 +161,15 @@ class MainActivity : ComponentActivity() {
     /**
      * OPPO：逐个滚轮轴试，取第一个非零值，不做 action / source 判断（source 位不可靠）。
      *
-     * 自适应增益：
-     *   - 真正的 REL_WHEEL 一格是十几到几十，直接用；
-     *   - 但有些"OPPO 模式"的表实际仍是旋转编码器，一格只上报 ±1，
-     *     直接乘灵敏度后滚动量太小、肉眼像没反应。所以 |v| ≤ 2 时按编码器放大。
+     * 照搬 f-x：直接返回原始值，不做任何自适应放大。
+     * 之前 |v| ≤ 2 时乘 15 的"自适应增益"会把表冠停下瞬间的微小反向抖动放大成
+     * 十几像素的反向跳动 —— 就是滚动完"像有回弹、向反方向滚一小段"的来源之一。
+     * 滚动量统一交给灵敏度 crownSpeed 调节（设置页可实时调），手感与 f-x 一致。
      */
     private fun oppoRaw(event: MotionEvent): Float {
         for (axis in SCROLL_AXES) {
             val v = event.getAxisValue(axis)
-            if (v != 0f && v.isFinite()) {
-                return if (abs(v) <= 2f) v * ROTARY_RAW_SCALE else v
-            }
+            if (v != 0f && v.isFinite()) return v
         }
         return 0f
     }
