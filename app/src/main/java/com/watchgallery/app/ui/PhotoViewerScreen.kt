@@ -99,10 +99,8 @@ fun PhotoViewerScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                IconButton(onClick = onBack, modifier = Modifier.size(34.dp)) {
-                    Icon(Icons.Filled.ArrowBack, "返回", tint = Color.White, modifier = Modifier.size(18.dp))
-                }
-                Row {
+                // 返回改为边缘右划手势，顶部只留缩放按钮并居中
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                     IconButton(onClick = { scale = (scale + 0.3f).coerceAtMost(6f) }, modifier = Modifier.size(34.dp)) {
                         Icon(Icons.Filled.ZoomIn, "放大", tint = Color.White, modifier = Modifier.size(18.dp))
                     }
