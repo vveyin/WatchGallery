@@ -3,6 +3,7 @@ package com.watchgallery.app.data
 import android.Manifest
 import android.content.ContentUris
 import android.content.Context
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.media.MediaScannerConnection
 import android.net.Uri
@@ -436,7 +437,7 @@ class MediaRepository(private val context: Context) {
     }
 
     /**
-     * 删除一组照片。MediaStore 记录用 ContentResolver.delete（带 _ID），
+     * 删除一组照片（旧系统兜底）。MediaStore 记录用 ContentResolver.delete（带 _ID），
      * 应用私有导入目录的文件直接删 File。返回成功删除的张数。
      */
     suspend fun deletePhotos(photos: List<Photo>): Int = withContext(Dispatchers.IO) {
@@ -453,6 +454,53 @@ class MediaRepository(private val context: Context) {
                 if (deleted) ok++
             } catch (_: Exception) {
                 // 系统照片可能无删除权限（如只读卷），跳过即可
+            }
+        }
+        ok
+    }
+
+    /** 删除计划：MediaStore 里的照片交给系统弹窗确认，应用私有文件直接删 */
+    data class DeletePlan(
+        val mediaUris: List<Uri>,
+        val privatePhotos: List<Photo>
+    ) {
+        val isEmpty: Boolean get() = mediaUris.isEmpty() && privatePhotos.isEmpty()
+    }
+
+    fun buildDeletePlan(photos: List<Photo>): DeletePlan {
+        val media = ArrayList<Uri>()
+        val private = ArrayList<Photo>()
+        photos.forEach { p ->
+            val u = p.uri
+            if (u.scheme == "content" && u.authority == MediaStore.AUTHORITY) media.add(u)
+            else private.add(p)
+        }
+        return DeletePlan(media, private)
+    }
+
+    /**
+     * 系统删除确认：MediaStore.createDeleteRequest（Android 11+）。
+     * 拉起的是系统自己的「删除这些照片？」弹窗，用户在弹窗里点确认后**由系统删除**，
+     * 应用拿不到也不需要 WRITE/MANAGE_EXTERNAL_STORAGE 权限，删完 MediaStore 自动刷新。
+     * 旧系统或没有可删项时返回 null，调用方走 [deletePhotos] 兜底。
+     */
+    fun createSystemDeleteRequest(uris: List<Uri>): IntentSender? {
+        if (uris.isEmpty() || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        return runCatching {
+            MediaStore.createDeleteRequest(context.contentResolver, uris).intentSender
+        }.getOrNull()
+    }
+
+    /** 删除应用私有目录里的图片（不经过系统弹窗） */
+    suspend fun deletePrivatePhotos(photos: List<Photo>): Int = withContext(Dispatchers.IO) {
+        var ok = 0
+        photos.forEach { photo ->
+            val f = when (photo.uri.scheme) {
+                "file" -> File(photo.uri.path ?: "")
+                else -> File(importedDir, photo.displayName)
+            }
+            runCatching {
+                if (f.exists() && f.delete()) ok++
             }
         }
         ok
