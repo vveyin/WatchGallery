@@ -1,6 +1,7 @@
 package com.watchgallery.app.ui
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -23,8 +24,11 @@ import kotlin.math.abs
  * 交互式返回容器（iOS 风格）：
  *
  * 底层始终渲染「返回后的界面」[backContent]，顶层是当前界面 [content]。
- * 手指从屏幕左边缘按下并向右划动时，顶层跟随右移并逐渐淡出，露出下面的返回目标界面；
- * 松手若位移超过阈值则触发 [onBack]，否则回弹归位。
+ * 手指从屏幕左边缘按下并向右划动时：
+ *  - 顶层跟手右移并逐渐淡出；
+ *  - 底层从缩小/偏移状态平滑放大回正，露出返回目标；
+ * 松手若位移超过阈值，先把顶层用动画完整滑出屏幕，动画结束后再触发 [onBack]，
+ * 这样不会出现「划过去当前界面突然消失」的跳变；未超阈值则动画回弹归位。
  *
  * 只接管"从左边缘开始的水平右划"：一旦判定为垂直滚动或反向滑动就立即放手，
  * 不干扰列表滚动与表冠事件。
@@ -45,19 +49,32 @@ fun SwipeBackContainer(
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val widthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
 
-        // 底层：返回后的界面，一直渲染在下面
-        Box(modifier = Modifier.fillMaxSize()) {
+        // 底层：返回后的界面。随手势进度从「缩小 + 左偏 + 变暗」平滑放大回正。
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    val progress = (offsetX.value / widthPx).coerceIn(0f, 1f)
+                    // 缓出曲线：手势前半段就有明显层次变化
+                    val eased = 1f - (1f - progress) * (1f - progress)
+                    val scale = 0.90f + 0.10f * eased
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = -widthPx * 0.05f * (1f - eased)
+                    alpha = 0.65f + 0.35f * eased
+                }
+        ) {
             backContent()
         }
 
-        // 顶层：当前界面，跟手右移 + 淡出，露出底层
+        // 顶层：当前界面，跟手右移 + 淡出，超阈值时完整滑出后再切换页面。
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer {
                     translationX = offsetX.value
                     val progress = (offsetX.value / widthPx).coerceIn(0f, 1f)
-                    alpha = 1f - 0.45f * progress
+                    alpha = 1f - 0.38f * progress
                 }
                 .pointerInput(onBack) {
                     awaitEachGesture {
@@ -79,8 +96,11 @@ fun SwipeBackContainer(
                             totalDy += dy
                             if (!decided && !abandoned) {
                                 if (abs(totalDx) > touchSlop || abs(totalDy) > touchSlop) {
-                                    if (totalDx > 0f && abs(totalDx) > abs(totalDy) * 1.2f) decided = true
-                                    else abandoned = true
+                                    if (totalDx > 0f && abs(totalDx) > abs(totalDy) * 1.2f) {
+                                        decided = true
+                                    } else {
+                                        abandoned = true
+                                    }
                                 }
                             }
                             if (decided) {
@@ -91,10 +111,15 @@ fun SwipeBackContainer(
                             }
                         }
                         if (decided && totalDx > thresholdPx) {
-                            onBack()
-                            scope.launch { offsetX.snapTo(0f) }
+                            // 先把当前页完整滑出，动画结束后再切换页面，避免突然消失。
+                            scope.launch {
+                                offsetX.animateTo(widthPx, tween(170, easing = FastOutSlowInEasing))
+                                onBack()
+                                // 页面已切换：回到 0，让新的顶层页正常显示。
+                                offsetX.snapTo(0f)
+                            }
                         } else {
-                            scope.launch { offsetX.animateTo(0f, tween(180)) }
+                            scope.launch { offsetX.animateTo(0f, tween(200, easing = FastOutSlowInEasing)) }
                         }
                     }
                 }

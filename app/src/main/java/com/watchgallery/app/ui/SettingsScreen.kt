@@ -4,20 +4,18 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.widget.Toast
-import androidx.compose.foundation.background
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.watchgallery.app.data.CrownMode
@@ -28,6 +26,7 @@ import kotlinx.coroutines.flow.Flow
 
 /**
  * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有居中放大 + 表冠滚动）。
+ * 控件统一用 Material3 标准全圆角 Button，紧凑不占满屏。
  */
 @Composable
 fun SettingsScreen(
@@ -35,7 +34,8 @@ fun SettingsScreen(
     isRound: Boolean,
     crownEvents: Flow<Float>,
     onBack: () -> Unit,
-    onCrownPrefsChanged: () -> Unit
+    onCrownPrefsChanged: () -> Unit,
+    onCheckUpdate: () -> Unit = {}
 ) {
     var subPage by remember { mutableStateOf<SubPage>(SubPage.Main) }
 
@@ -45,7 +45,8 @@ fun SettingsScreen(
             crownEvents = crownEvents,
             onOpenCrown = { subPage = SubPage.Crown },
             onOpenTheme = { subPage = SubPage.Theme },
-            onOpenDiag = { subPage = SubPage.Diag }
+            onOpenDiag = { subPage = SubPage.Diag },
+            onCheckUpdate = onCheckUpdate
         )
         SubPage.Crown -> CrownSettings(
             viewModel = viewModel,
@@ -71,7 +72,8 @@ private fun SettingsMain(
     crownEvents: Flow<Float>,
     onOpenCrown: () -> Unit,
     onOpenTheme: () -> Unit,
-    onOpenDiag: () -> Unit
+    onOpenDiag: () -> Unit,
+    onCheckUpdate: () -> Unit
 ) {
     val themeMode by viewModel.themeMode.collectAsState()
     val crownMode by viewModel.crownMode.collectAsState()
@@ -80,9 +82,13 @@ private fun SettingsMain(
     val report by viewModel.scanReport.collectAsState()
     val context = LocalContext.current
 
+    val importLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris -> if (uris.isNotEmpty()) viewModel.importPhotos(uris) }
+
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "settings_title") {
-            Box(Modifier.fillMaxWidth().height(32.dp).scalingItem("settings_title"),
+            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("settings_title"),
                 contentAlignment = Alignment.Center) {
                 Text("设置", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
@@ -90,7 +96,7 @@ private fun SettingsMain(
         }
         item(key = "row_crown") {
             Box(Modifier.fillMaxWidth().scalingItem("row_crown")) {
-                SettingRow(
+                SettingButton(
                     icon = Icons.Filled.Cached,
                     title = "表冠适配",
                     subtitle = "${crownMode.label} · ${String.format("%.1f", crownSpeed)}x",
@@ -100,7 +106,7 @@ private fun SettingsMain(
         }
         item(key = "row_grid") {
             Box(Modifier.fillMaxWidth().scalingItem("row_grid")) {
-                SettingRow(
+                SettingButton(
                     icon = Icons.Filled.GridView,
                     title = "每排照片",
                     subtitle = "$gridColumns 张 · 点击切换 2/3 张",
@@ -110,7 +116,7 @@ private fun SettingsMain(
         }
         item(key = "row_theme") {
             Box(Modifier.fillMaxWidth().scalingItem("row_theme")) {
-                SettingRow(
+                SettingButton(
                     icon = when (themeMode) {
                         ThemeMode.DARK -> Icons.Filled.DarkMode
                         ThemeMode.LIGHT -> Icons.Filled.LightMode
@@ -128,17 +134,27 @@ private fun SettingsMain(
         }
         item(key = "row_diag") {
             Box(Modifier.fillMaxWidth().scalingItem("row_diag")) {
-                SettingRow(
+                SettingButton(
                     icon = Icons.Filled.Search,
                     title = "扫描诊断",
-                    subtitle = "媒体库 ${report.imagesRows} 条 · 目录 ${report.dirHits} 张 · 导入 ${report.importedCount} 张",
+                    subtitle = "媒体库 ${report.imagesRows} · 目录 ${report.dirHits} · 导入 ${report.importedCount}",
                     onClick = onOpenDiag
+                )
+            }
+        }
+        item(key = "row_import") {
+            Box(Modifier.fillMaxWidth().scalingItem("row_import")) {
+                SettingButton(
+                    icon = Icons.Filled.AddPhotoAlternate,
+                    title = "导入照片",
+                    subtitle = "从文件选择器添加照片",
+                    onClick = { runCatching { importLauncher.launch(arrayOf("image/*")) } }
                 )
             }
         }
         item(key = "row_log") {
             Box(Modifier.fillMaxWidth().scalingItem("row_log")) {
-                SettingRow(
+                SettingButton(
                     icon = Icons.Filled.ContentCopy,
                     title = "复制日志",
                     subtitle = "崩溃与运行日志，用于排查问题",
@@ -150,9 +166,19 @@ private fun SettingsMain(
                 )
             }
         }
+        item(key = "row_update") {
+            Box(Modifier.fillMaxWidth().scalingItem("row_update")) {
+                SettingButton(
+                    icon = Icons.Filled.SystemUpdate,
+                    title = "检测更新",
+                    subtitle = "检查并安装新版本",
+                    onClick = onCheckUpdate
+                )
+            }
+        }
         item(key = "row_about") {
             Box(Modifier.fillMaxWidth().scalingItem("row_about")) {
-                SettingRow(
+                SettingButton(
                     icon = Icons.Filled.Info,
                     title = "关于",
                     subtitle = "相册 v${com.watchgallery.app.BuildConfig.VERSION_NAME} · 圆屏手表版",
@@ -181,7 +207,7 @@ private fun CrownSettings(
 
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "crown_title") {
-            Box(Modifier.fillMaxWidth().height(32.dp).scalingItem("crown_title"),
+            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("crown_title"),
                 contentAlignment = Alignment.Center) {
                 Text("表冠适配", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
@@ -200,7 +226,7 @@ private fun CrownSettings(
         }
         item(key = "crown_mode_label") {
             Box(Modifier.fillMaxWidth().scalingItem("crown_mode_label")) {
-                Text("模式", style = MaterialTheme.typography.titleMedium,
+                Text("模式", style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary)
             }
         }
@@ -208,27 +234,21 @@ private fun CrownSettings(
             item(key = "crown_mode_${m.name}") {
                 Box(Modifier.fillMaxWidth().scalingItem("crown_mode_${m.name}")) {
                     val selected = mode == m
-                    Card(
-                        modifier = Modifier.fillMaxWidth().clickable { mode = m; commit() },
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
-                            else MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Row(
-                            Modifier.fillMaxWidth().padding(12.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    if (selected) {
+                        Button(
+                            onClick = { mode = m; commit() },
+                            modifier = Modifier.fillMaxWidth().height(42.dp)
                         ) {
-                            RadioButton(selected = selected, onClick = { mode = m; commit() },
-                                modifier = Modifier.size(24.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Column {
-                                Text(m.label, style = MaterialTheme.typography.titleMedium,
-                                    fontWeight = FontWeight.Bold)
-                                Text(m.description, style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
+                            Text("${m.label} — ${m.description}",
+                                style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { mode = m; commit() },
+                            modifier = Modifier.fillMaxWidth().height(42.dp)
+                        ) {
+                            Text("${m.label} — ${m.description}",
+                                style = MaterialTheme.typography.labelMedium, maxLines = 1)
                         }
                     }
                 }
@@ -238,7 +258,7 @@ private fun CrownSettings(
             Box(Modifier.fillMaxWidth().scalingItem("crown_speed")) {
                 Column {
                     Text("灵敏度  ${String.format("%.1f", speed)}x",
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.height(4.dp))
                     Slider(
@@ -248,43 +268,21 @@ private fun CrownSettings(
                         onValueChangeFinished = { commit() },
                         modifier = Modifier.fillMaxWidth()
                     )
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                        Text("慢", style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                        Text("快", style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
                 }
             }
         }
         item(key = "crown_test") {
             Box(Modifier.fillMaxWidth().scalingItem("crown_test")) {
                 Column {
-                    Text("表冠测试", style = MaterialTheme.typography.titleMedium,
+                    Text("表冠测试", style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.height(4.dp))
-                    Card(
-                        modifier = Modifier.fillMaxWidth(),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        shape = RoundedCornerShape(12.dp)
-                    ) {
-                        Column(Modifier.fillMaxWidth().padding(10.dp)) {
-                            Text(
-                                "转动表冠，下方若出现数值说明当前模式已能识别；一直显示「未检测到」请换另一模式。",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                            Spacer(Modifier.height(6.dp))
-                            Text(
-                                debug ?: "未检测到表冠事件",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = if (debug != null) MaterialTheme.colorScheme.primary
-                                else MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    }
+                    Text(
+                        debug ?: "未检测到表冠事件",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (debug != null) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
             }
         }
@@ -305,7 +303,7 @@ private fun ThemeSettings(
     )
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "theme_title") {
-            Box(Modifier.fillMaxWidth().height(32.dp).scalingItem("theme_title"),
+            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("theme_title"),
                 contentAlignment = Alignment.Center) {
                 Text("主题", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
@@ -315,22 +313,19 @@ private fun ThemeSettings(
             item(key = "theme_${mode.name}") {
                 Box(Modifier.fillMaxWidth().scalingItem("theme_${mode.name}")) {
                     val selected = current == mode
-                    Card(
-                        modifier = Modifier.fillMaxWidth().clickable { viewModel.setThemeMode(mode) },
-                        colors = CardDefaults.cardColors(
-                            containerColor = if (selected) MaterialTheme.colorScheme.primaryContainer
-                            else MaterialTheme.colorScheme.surfaceVariant
-                        ),
-                        shape = RoundedCornerShape(14.dp)
-                    ) {
-                        Row(
-                            Modifier.fillMaxWidth().padding(14.dp),
-                            verticalAlignment = Alignment.CenterVertically
+                    if (selected) {
+                        Button(
+                            onClick = { viewModel.setThemeMode(mode) },
+                            modifier = Modifier.fillMaxWidth().height(42.dp)
                         ) {
-                            RadioButton(selected = selected, onClick = { viewModel.setThemeMode(mode) },
-                                modifier = Modifier.size(24.dp))
-                            Spacer(Modifier.width(8.dp))
-                            Text(label, style = MaterialTheme.typography.titleMedium)
+                            Text(label, style = MaterialTheme.typography.labelLarge)
+                        }
+                    } else {
+                        OutlinedButton(
+                            onClick = { viewModel.setThemeMode(mode) },
+                            modifier = Modifier.fillMaxWidth().height(42.dp)
+                        ) {
+                            Text(label, style = MaterialTheme.typography.labelLarge)
                         }
                     }
                 }
@@ -339,29 +334,23 @@ private fun ThemeSettings(
     }
 }
 
+/** Material3 标准全圆角按钮样式的设置项 */
 @Composable
-private fun SettingRow(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-        shape = RoundedCornerShape(16.dp)
+private fun SettingButton(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(46.dp),
+        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
     ) {
-        Row(
-            Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Icon(icon, null, tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
-            Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold)
-                Text(subtitle, style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
-            }
-            Icon(Icons.Filled.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(16.dp))
+        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+            Text(subtitle, style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f), maxLines = 1)
         }
+        Icon(Icons.Filled.ChevronRight, contentDescription = null,
+            modifier = Modifier.size(16.dp))
     }
 }
 
@@ -376,7 +365,7 @@ private fun ScanDiagSettings(
 
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "diag_title") {
-            Box(Modifier.fillMaxWidth().height(32.dp).scalingItem("diag_title"),
+            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("diag_title"),
                 contentAlignment = Alignment.Center) {
                 Text("扫描诊断", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
@@ -384,7 +373,7 @@ private fun ScanDiagSettings(
         }
         item(key = "diag_count") {
             Box(Modifier.fillMaxWidth().scalingItem("diag_count")) {
-                Text("共 ${photos.size} 张", style = MaterialTheme.typography.titleMedium,
+                Text("共 ${photos.size} 张", style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary)
             }
         }
@@ -430,7 +419,7 @@ private fun ScanDiagSettings(
         }
         item(key = "diag_rescan") {
             Box(Modifier.fillMaxWidth().scalingItem("diag_rescan")) {
-                Button(onClick = { viewModel.refresh() }, modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = { viewModel.refresh() }, modifier = Modifier.fillMaxWidth().height(42.dp)) {
                     Text("重新扫描")
                 }
             }

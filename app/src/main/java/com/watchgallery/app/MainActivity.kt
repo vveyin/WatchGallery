@@ -302,7 +302,8 @@ private fun AppNavigation(
                     isRound = isRound,
                     crownEvents = layerCrown,
                     onBack = { if (interactive) goBack() },
-                    onCrownPrefsChanged = onCrownPrefsChanged
+                    onCrownPrefsChanged = onCrownPrefsChanged,
+                    onCheckUpdate = { if (interactive) navigate(Screen.Update) }
                 )
                 is Screen.Update -> UpdateScreen(
                     viewModel = viewModel,
