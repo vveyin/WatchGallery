@@ -2,6 +2,7 @@ package com.watchgallery.app.ui
 
 import android.app.Application
 import android.content.Context
+import android.content.IntentSender
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.material3.SnackbarDuration
@@ -106,17 +107,107 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         _selectedUris.value = _selectedUris.value + uris
     }
 
-    /** 删除选中的照片，成功后退出多选并刷新 */
-    fun deleteSelected(onDone: (Int) -> Unit = {}) {
+    // ── 删除（走系统确认弹窗）──
+
+    /**
+     * 系统删除请求。带自增 id 而不是直接放 IntentSender —— 同一次删除可能连续触发，
+     * 用 id 保证 UI 侧每次都能收到一个「新」事件去拉起弹窗。
+     */
+    data class SystemDeleteRequest(val sender: IntentSender, val id: Long)
+
+    private val _deleteRequest = MutableStateFlow<SystemDeleteRequest?>(null)
+    val deleteRequest: StateFlow<SystemDeleteRequest?> = _deleteRequest
+
+    private var deleteRequestId = 0L
+
+    /** 系统弹窗确认后仍需应用自己删的私有文件 */
+    private var pendingPrivate: List<Photo> = emptyList()
+
+    /** 本次待删的全部照片（拉不起系统弹窗时兜底直接删） */
+    private var pendingAll: List<Photo> = emptyList()
+
+    /** 本次待删总数（用于提示文案） */
+    private var pendingCount: Int = 0
+
+    /**
+     * 删除选中的照片。
+     *
+     * MediaStore 里的照片不直接 delete，而是用 MediaStore.createDeleteRequest 生成
+     * 系统确认弹窗（Android 11+ 官方推荐做法）：用户点「删除」后由系统完成删除，
+     * 应用无需 WRITE_EXTERNAL_STORAGE / MANAGE_EXTERNAL_STORAGE，也不会被权限卡住。
+     * 应用私有目录导入的照片不进系统弹窗，确认后顺带删掉。
+     */
+    fun deleteSelected() {
+        val uris = _selectedUris.value
+        if (uris.isEmpty()) return
+        val targets = allPhotos.value.filter { it.uri.toString() in uris }
+        if (targets.isEmpty()) {
+            exitSelectionMode()
+            return
+        }
+        pendingCount = targets.size
+        pendingAll = targets
+        val plan = repo.buildDeletePlan(targets)
+        pendingPrivate = plan.privatePhotos
+
+        val sender = repo.createSystemDeleteRequest(plan.mediaUris)
+        if (sender != null) {
+            _deleteRequest.value = SystemDeleteRequest(sender, ++deleteRequestId)
+        } else {
+            // 旧系统没有系统删除弹窗：直接删（含 MediaStore 与私有文件）
+            pendingPrivate = emptyList()
+            doDelete(targets)
+        }
+    }
+
+    /** UI 拉起系统删除弹窗后的回调；confirmed = 用户在系统弹窗里点了删除 */
+    fun onDeleteRequestResult(confirmed: Boolean) {
+        _deleteRequest.value = null
+        val priv = pendingPrivate
+        val total = pendingCount
+        pendingPrivate = emptyList()
+        pendingAll = emptyList()
+        pendingCount = 0
+        if (!confirmed) {
+            _message.value = "已取消删除"
+            return
+        }
         viewModelScope.launch {
-            val uris = _selectedUris.value
-            if (uris.isEmpty()) { onDone(0); return@launch }
-            val toDelete = allPhotos.value.filter { it.uri.toString() in uris }
-            val ok = repo.deletePhotos(toDelete)
-            _message.value = if (ok > 0) "已删除 $ok 张照片" else "删除失败（系统照片可能无删除权限）"
+            // 系统已经删掉 MediaStore 里的照片，这里只需清理私有文件
+            val privOk = repo.deletePrivatePhotos(priv)
+            _message.value =
+                if (priv.isEmpty() || privOk > 0) "已删除 $total 张照片"
+                else "已删除，部分导入文件清理失败"
             exitSelectionMode()
             refresh()
-            onDone(ok)
+        }
+    }
+
+    /** 系统删除弹窗拉不起来时的兜底（机型阉割 / URI 被拒） */
+    fun onDeleteRequestUnavailable() {
+        _deleteRequest.value = null
+        val all = pendingAll
+        pendingPrivate = emptyList()
+        pendingAll = emptyList()
+        pendingCount = 0
+        doDelete(all)
+    }
+
+    private fun doDelete(targets: List<Photo>) {
+        viewModelScope.launch {
+            if (targets.isEmpty()) {
+                _message.value = "无法调起系统删除"
+                pendingCount = 0
+                exitSelectionMode()
+                return@launch
+            }
+            val ok = repo.deletePhotos(targets)
+            _message.value =
+                if (ok > 0) "已删除 $ok 张照片"
+                else "删除失败（这张照片可能不允许删除）"
+            pendingCount = 0
+            exitSelectionMode()
+            refresh()
         }
     }
 
