@@ -1,5 +1,7 @@
 package com.watchgallery.app.ui
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.PaddingValues
@@ -8,6 +10,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,11 +40,13 @@ fun ScalingScrollColumn(
 ) {
     val listState = rememberLazyListState()
 
-    // 表冠滚动：照搬 f-x，事件到达直接 scrollBy，即时跟手、无阻尼
+    // 表冠滚动：照搬 f-x，事件到达直接 scrollBy（不触发 overscroll 回弹）
     CrownScroll(crownEvents) { step ->
-        listState.scroll { scrollBy(step) }
+        listState.scrollBy(step)
     }
 
+    @OptIn(ExperimentalFoundationApi::class)
+    CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
     LazyColumn(
         state = listState,
         modifier = Modifier.fillMaxSize(),
@@ -49,6 +54,7 @@ fun ScalingScrollColumn(
         verticalArrangement = verticalArrangement
     ) {
         content()
+    }
     }
 }
 
