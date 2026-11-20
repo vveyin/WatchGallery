@@ -26,6 +26,8 @@ import com.watchgallery.app.data.CrownMode
 import com.watchgallery.app.data.CrownPrefs
 import com.watchgallery.app.data.Photo
 import com.watchgallery.app.theme.WatchGalleryTheme
+import com.watchgallery.app.theme.ThemeMode
+import com.watchgallery.app.util.CrashLogger
 import com.watchgallery.app.ui.*
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -40,6 +42,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val crashedLastTime = CrashLogger.hasPending(this)
+        CrashLogger.log(this, "MainActivity.onCreate start (crashedLastTime=$crashedLastTime)")
         applyCrownPrefs()
 
         // 沉浸式全屏
@@ -55,6 +59,7 @@ class MainActivity : ComponentActivity() {
             val message by viewModel.message.collectAsState()
             val snackbarHostState = remember { SnackbarHostState() }
             val scope = rememberCoroutineScope()
+            var showCrashReport by remember { mutableStateOf(crashedLastTime) }
 
             LaunchedEffect(message) {
                 message?.let {
@@ -64,7 +69,26 @@ class MainActivity : ComponentActivity() {
             }
 
             WatchGalleryTheme(themeMode = themeMode) {
-                AppNavigation(viewModel, snackbarHostState, onCrownPrefsChanged = { applyCrownPrefs() })
+                val context = LocalContext.current
+                val round = remember {
+                    context.resources.configuration.screenLayout and
+                            android.content.res.Configuration.SCREENLAYOUT_ROUND_MASK ==
+                            android.content.res.Configuration.SCREENLAYOUT_ROUND_YES
+                }
+                if (showCrashReport) {
+                    CrashReportScreen(
+                        isRound = round,
+                        onContinue = {
+                            CrashLogger.log(context, "user dismissed crash report")
+                            showCrashReport = false
+                        }
+                    )
+                } else {
+                    AppNavigation(
+                        viewModel, snackbarHostState,
+                        onCrownPrefsChanged = { applyCrownPrefs() }
+                    )
+                }
             }
         }
     }
