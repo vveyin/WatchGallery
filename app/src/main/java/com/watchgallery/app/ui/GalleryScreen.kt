@@ -34,7 +34,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
@@ -188,6 +187,12 @@ fun GalleryScreen(
     }
 }
 
+/** 返回屏幕上某坐标点命中的照片 uri（取第一个包含该点的 cell），未命中返回 null。 */
+private fun hitCell(cellRects: Map<String, Rect>, p: Offset): String? =
+    cellRects.entries.firstOrNull { (_, r) ->
+        p.x in r.left..r.right && p.y in r.top..r.bottom
+    }?.key
+
 /**
  * 正方形网格照片列表：每排 [columns] 张，越靠近视口中心的「行」越大、上下淡出。
  * 缩放/透明度在 graphicsLayer 绘制阶段按滚动位置实时计算，不触发重组。
@@ -214,10 +219,8 @@ private fun ScalingPhotoList(
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
 
-    // 每张照片的屏幕矩形（px），供滑动框选判定命中用。key = uri 字符串。
+    // 每张照片的屏幕矩形（px），供滑动刷选判定命中用。key = uri 字符串。
     val cellRects = remember { mutableMapOf<String, Rect>() }
-    // 当前框选矩形（拖动预览），null 表示未在框选
-    var selectionRect by remember { mutableStateOf<Rect?>(null) }
 
     // 表冠平滑滚动：离散事件累加成目标位移后逐帧逼近，避免一格一格的顿挫
     SmoothCrownScroll(crownEvents) { step ->
@@ -329,7 +332,9 @@ private fun ScalingPhotoList(
             }
         }
 
-        // 多选模式下的框选覆盖层：捕获拖动，按矩形选中范围内所有照片。
+        // 多选模式下的「刷选」覆盖层：手指划过哪些照片就选中哪些，与手机厂商相册同款。
+        // 不画任何框；沿手指每一段的移动轨迹密集采样，采样点落到哪张照片就把它加入选中。
+        // 手指从左上划到右下时，轨迹扫过区域里的所有照片都会被依次选中。
         if (selectionMode) {
             Box(
                 Modifier
@@ -338,7 +343,7 @@ private fun ScalingPhotoList(
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             down.consume()
-                            var start = down.position
+                            var last = down.position
                             var moved = false
                             var tapped = true
                             while (true) {
@@ -347,51 +352,34 @@ private fun ScalingPhotoList(
                                 val change = event.changes.first()
                                 change.consume()
                                 val cur = change.position
-                                if ((cur - start).getDistance() > 12f) {
+                                if ((cur - down.position).getDistance() > 10f) {
                                     moved = true
                                     tapped = false
                                 }
                                 if (moved) {
-                                    // 手机相册同款：起点→当前点形成矩形，矩形内所有照片选中。
-                                    val rect = Rect(
-                                        kotlin.math.min(start.x, cur.x),
-                                        kotlin.math.min(start.y, cur.y),
-                                        kotlin.math.max(start.x, cur.x),
-                                        kotlin.math.max(start.y, cur.y)
-                                    )
-                                    selectionRect = rect
-                                    val inside = cellRects.filter { (_, cellRect) ->
-                                        val c = cellRect.center
-                                        c.x in rect.left..rect.right && c.y in rect.top..rect.bottom
-                                    }.keys.toList()
-                                    onSelectRange(inside)
+                                    // 沿 last→cur 这一段轨迹密集采样（每 ~8px 一个点），
+                                    // 避免手指滑得快时跳过中间的照片。命中即加入选中。
+                                    val dist = (cur - last).getDistance()
+                                    val steps = (dist / 8f).toInt().coerceAtLeast(1)
+                                    val hitUris = HashSet<String>()
+                                    for (i in 0..steps) {
+                                        val t = i / steps.toFloat()
+                                        val px = last.x + (cur.x - last.x) * t
+                                        val py = last.y + (cur.y - last.y) * t
+                                        hitCell(cellRects, Offset(px, py))
+                                            ?.let { hitUris.add(it) }
+                                    }
+                                    if (hitUris.isNotEmpty()) onSelectRange(hitUris)
                                 }
+                                last = cur
                             }
-                            // 抬起：未移动视为单击 —— 判断落点所在 cell 并切换选中
+                            // 抬起：完全没移动视为单击 —— 切换起点照片的选中状态
                             if (tapped) {
-                                val hit = cellRects.entries.firstOrNull { (_, r) ->
-                                    start.x in r.left..r.right && start.y in r.top..r.bottom
-                                }?.key
-                                if (hit != null) onToggle(hit)
+                                hitCell(cellRects, down.position)?.let { onToggle(it) }
                             }
-                            selectionRect = null
                         }
                     }
-            ) {
-                // 框选矩形的可视化边框
-                selectionRect?.let { r ->
-                    Box(
-                        Modifier
-                            .offset { IntOffset(r.left.toInt(), r.top.toInt()) }
-                            .size(
-                                with(density) { (r.right - r.left).coerceAtLeast(1f).toDp() },
-                                with(density) { (r.bottom - r.top).coerceAtLeast(1f).toDp() }
-                            )
-                            .border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp))
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f))
-                    )
-                }
-            }
+            )
         }
     }
 }
