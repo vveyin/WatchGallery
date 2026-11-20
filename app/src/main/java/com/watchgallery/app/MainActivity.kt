@@ -29,6 +29,7 @@ import com.watchgallery.app.theme.WatchGalleryTheme
 import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.CrashLogger
 import com.watchgallery.app.ui.*
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -232,9 +233,10 @@ private fun AppNavigation(
     snackbarHostState: SnackbarHostState,
     onCrownPrefsChanged: () -> Unit
 ) {
-    var screen by remember { mutableStateOf<Screen>(Screen.Gallery) }
+    // 导航栈：栈底是 Gallery， push 进入子页，pop 返回。
+    // SwipeBackContainer 在右划时把「下一层（返回目标）」渲染在底下，形成交互式返回观感。
+    val backStack = remember { mutableStateListOf<Screen>(Screen.Gallery) }
     var currentPhoto by remember { mutableStateOf<Photo?>(null) }
-    // 大图翻页用完整列表（不受主页分页显示条数影响）
     val photos by viewModel.allPhotosFlow.collectAsState()
 
     val context = LocalContext.current
@@ -243,70 +245,75 @@ private fun AppNavigation(
                 android.content.res.Configuration.SCREENLAYOUT_ROUND_MASK ==
                 android.content.res.Configuration.SCREENLAYOUT_ROUND_YES
     }
-
     val crownEvents = viewModel.crownEvents
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    fun navigate(to: Screen) { backStack.add(to) }
+    fun goBack() { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) }
+
+    val current = backStack.last()
+    val below = if (backStack.size >= 2) backStack[backStack.size - 2] else null
+
+    // 渲染某一层界面；interactive=false 的底层只做视觉呈现，不响应点击
+    @Composable
+    fun ScreenLayer(screen: Screen, interactive: Boolean) {
         when (screen) {
             is Screen.Gallery -> GalleryScreen(
                 viewModel = viewModel,
                 isRound = isRound,
                 crownEvents = crownEvents,
                 onPhotoClick = { photo ->
-                    currentPhoto = photo
-                    screen = Screen.Viewer
+                    if (interactive) { currentPhoto = photo; navigate(Screen.Viewer) }
                 },
-                onOpenSettings = { screen = Screen.Settings },
-                onCheckUpdate = { screen = Screen.Update }
+                onOpenSettings = { if (interactive) navigate(Screen.Settings) },
+                onCheckUpdate = { if (interactive) navigate(Screen.Update) }
             )
             is Screen.Viewer -> {
                 val idx = photos.indexOfFirst { it.uri == currentPhoto?.uri }.coerceAtLeast(0)
-                Box(Modifier.fillMaxSize().swipeToGoBack { screen = Screen.Gallery }) {
-                    PhotoViewerScreen(
-                        photos = photos,
-                        initialIndex = idx,
-                        isRound = isRound,
-                        crownEvents = crownEvents,
-                        onBack = { screen = Screen.Gallery },
-                        onEdit = { photo ->
-                            currentPhoto = photo
-                            screen = Screen.Editor
-                        }
-                    )
-                }
-            }
-            is Screen.Editor -> {
-                currentPhoto?.let { photo ->
-                    Box(Modifier.fillMaxSize().swipeToGoBack { screen = Screen.Viewer }) {
-                        EditScreen(
-                            photo = photo,
-                            viewModel = viewModel,
-                            isRound = isRound,
-                            onBack = { screen = Screen.Viewer }
-                        )
-                    }
-                }
-            }
-            is Screen.Settings -> Box(
-                Modifier.fillMaxSize().swipeToGoBack { screen = Screen.Gallery }
-            ) {
-                SettingsScreen(
-                    viewModel = viewModel,
+                PhotoViewerScreen(
+                    photos = photos,
+                    initialIndex = idx,
                     isRound = isRound,
                     crownEvents = crownEvents,
-                    onBack = { screen = Screen.Gallery },
-                    onCrownPrefsChanged = onCrownPrefsChanged
+                    onBack = { if (interactive) goBack() },
+                    onEdit = { photo ->
+                        if (interactive) { currentPhoto = photo; navigate(Screen.Editor) }
+                    }
                 )
             }
-            is Screen.Update -> Box(
-                Modifier.fillMaxSize().swipeToGoBack { screen = Screen.Gallery }
-            ) {
-                UpdateScreen(
+            is Screen.Editor -> currentPhoto?.let { photo ->
+                EditScreen(
+                    photo = photo,
                     viewModel = viewModel,
                     isRound = isRound,
-                    onBack = { screen = Screen.Gallery }
+                    onBack = { if (interactive) goBack() }
                 )
             }
+            is Screen.Settings -> SettingsScreen(
+                viewModel = viewModel,
+                isRound = isRound,
+                crownEvents = crownEvents,
+                onBack = { if (interactive) goBack() },
+                onCrownPrefsChanged = onCrownPrefsChanged
+            )
+            is Screen.Update -> UpdateScreen(
+                viewModel = viewModel,
+                isRound = isRound,
+                crownEvents = crownEvents,
+                onBack = { if (interactive) goBack() }
+            )
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (below != null) {
+            // 有下一层：当前页覆盖在返回目标之上，右划时露出下层
+            SwipeBackContainer(
+                onBack = { goBack() },
+                backContent = { ScreenLayer(below, interactive = false) },
+                content = { ScreenLayer(current, interactive = true) }
+            )
+        } else {
+            ScreenLayer(current, interactive = true)
         }
         SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
     }

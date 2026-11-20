@@ -58,6 +58,18 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     )
     val themeMode: StateFlow<ThemeMode> = _themeMode
 
+    /** 列表每排显示张数（2 或 3），默认 2；存 SharedPreferences 持久化 */
+    private val _gridColumns = MutableStateFlow(
+        prefs.getInt("grid_columns", 2).coerceIn(2, 3)
+    )
+    val gridColumns: StateFlow<Int> = _gridColumns
+
+    fun setGridColumns(columns: Int) {
+        val c = columns.coerceIn(2, 3)
+        _gridColumns.value = c
+        prefs.edit().putInt("grid_columns", c).apply()
+    }
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 

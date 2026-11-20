@@ -1,7 +1,9 @@
 package com.watchgallery.app.ui
 
 import android.content.Context
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -23,6 +25,7 @@ import com.watchgallery.app.util.ApkDownloader
 import com.watchgallery.app.util.ApkInstaller
 import com.watchgallery.app.util.ReleaseInfo
 import com.watchgallery.app.util.UpdateChecker
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.launch
 
 private sealed class UpdateState {
@@ -44,11 +47,14 @@ private sealed class UpdateState {
 fun UpdateScreen(
     viewModel: GalleryViewModel,
     isRound: Boolean,
+    crownEvents: Flow<Float> = kotlinx.coroutines.flow.emptyFlow(),
     onBack: () -> Unit
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
+    // 表冠驱动滚动：更新说明较长时可像其它页面一样用表冠浏览
+    val scrollState = rememberCrownScrollState(crownEvents)
 
     // 已有更新包时直接给出「安装」入口，避免安装失败后无法再次安装
     val existingApk = remember { ApkDownloader.updateApkFile(context) }
@@ -98,7 +104,7 @@ fun UpdateScreen(
         Column(
             Modifier
                 .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
+                .verticalScroll(scrollState),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             UpdateHeader(onBack)
@@ -260,4 +266,16 @@ private fun fmtMb(bytes: Long): String {
     if (bytes <= 0) return "0 MB"
     val mb = bytes / 1024.0 / 1024.0
     return String.format("%.1f MB", mb)
+}
+
+/** 表冠可滚动的 ScrollState：收到表冠增量就滚动对应距离 */
+@Composable
+private fun rememberCrownScrollState(crownEvents: Flow<Float>): ScrollState {
+    val state = rememberScrollState()
+    LaunchedEffect(crownEvents) {
+        crownEvents.collect { delta ->
+            state.scrollBy(-delta * 8f)
+        }
+    }
+    return state
 }

@@ -9,15 +9,16 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -55,12 +56,9 @@ private fun hasMediaPermission(context: android.content.Context): Boolean =
     ContextCompat.checkSelfPermission(context, mediaPermission()) == PackageManager.PERMISSION_GRANTED
 
 /**
- * 相册主界面 —— 全屏缩放列表（Wear OS 风格）。
- *
- * 不再套圆屏矩形安全区：列表占满整屏，靠「中间大、两边小并淡出」的缩放效果
- * 自然避开表盘弧边，这就是 Wear OS 原生 ScalingLazyColumn 的观感。
+ * 相册主界面 —— 正方形网格列表（列数可配置，默认两列）。
+ * 全屏铺满，靠「中间行大、上下行淡出」的缩放自然避开表盘弧边。
  */
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun GalleryScreen(
     viewModel: GalleryViewModel,
@@ -76,6 +74,7 @@ fun GalleryScreen(
     val report by viewModel.scanReport.collectAsState()
     val visibleCount by viewModel.visibleCount.collectAsState()
     val totalCount by viewModel.totalCountFlow.collectAsState()
+    val gridColumns by viewModel.gridColumns.collectAsState()
 
     var permissionGranted by remember { mutableStateOf(hasMediaPermission(context)) }
     var needSettings by remember { mutableStateOf(false) }
@@ -145,6 +144,7 @@ fun GalleryScreen(
             )
             else -> ScalingPhotoList(
                 items = photos,
+                columns = gridColumns,
                 crownEvents = crownEvents,
                 hasMore = visibleCount < totalCount,
                 totalCount = totalCount,
@@ -187,32 +187,33 @@ private fun TopIcon(icon: androidx.compose.ui.graphics.vector.ImageVector, desc:
 }
 
 /**
- * Wear OS 风格的缩放列表：列表项越靠近屏幕中心越大、越靠边缘越小并淡出。
- * 缩放/透明度在 graphicsLayer 的绘制阶段按滚动位置实时计算，不触发重组。
+ * 正方形网格照片列表：每排 [columns] 张，越靠近视口中心的「行」越大、上下淡出。
+ * 缩放/透明度在 graphicsLayer 绘制阶段按滚动位置实时计算，不触发重组。
  */
 @Composable
 private fun ScalingPhotoList(
     items: List<Photo>,
+    columns: Int,
     crownEvents: Flow<Float>,
     hasMore: Boolean,
     totalCount: Int,
     onLoadMore: () -> Unit,
     onPhotoClick: (Photo) -> Unit
 ) {
-    val listState = rememberLazyListState()
+    val gridState = rememberLazyGridState()
 
     LaunchedEffect(crownEvents) {
         crownEvents.collect { delta ->
-            listState.scroll { scrollBy(-delta * 9f) }
+            gridState.scroll { scrollBy(-delta * 9f) }
         }
     }
 
-    // 滑到倒数第二张时预加载下一批
+    // 滑到倒数一排时预加载下一批
     val needMore by remember {
         derivedStateOf {
-            val info = listState.layoutInfo
+            val info = gridState.layoutInfo
             val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
-            hasMore && last >= items.size - 3
+            hasMore && last >= items.size - columns
         }
     }
     LaunchedEffect(needMore) {
@@ -220,18 +221,47 @@ private fun ScalingPhotoList(
     }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        // 让首尾项也能滚到视口中央
-        val itemHeight = 112.dp
-        val edgePad = ((maxHeight - itemHeight) / 2).coerceAtLeast(20.dp)
-
-        LazyColumn(
-            state = listState,
+        val edgePad = (maxHeight / 2 - 72.dp).coerceAtLeast(24.dp)
+        LazyVerticalGrid(
+            state = gridState,
+            columns = GridCells.Fixed(columns),
             modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(vertical = edgePad)
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = edgePad),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
+            items(items, key = { it.uri.toString() }) { photo ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .graphicsLayer {
+                            gridState.firstVisibleItemIndex
+                            gridState.firstVisibleItemScrollOffset
+
+                            val info = gridState.layoutInfo
+                            val anchor = info.viewportSize.height / 2f
+                            val mine = info.visibleItemsInfo
+                                .firstOrNull { it.key == photo.uri.toString() }
+                            if (mine != null && mine.size.height > 0 && anchor > 0f) {
+                                val itemCenter = mine.offset.y + mine.size.height / 2f
+                                val distance = kotlin.math.abs(itemCenter - anchor)
+                                // 以半屏高为衰减半径，中间的「行」最大、上下渐小淡出。
+                                val t = (distance / (info.viewportSize.height / 2f)).coerceIn(0f, 1f)
+                                val eased = t * t
+                                val sc = 1.12f - 0.34f * eased   // 中心 1.12 → 边缘 0.78
+                                scaleX = sc
+                                scaleY = sc
+                                alpha = 1f - 0.5f * t
+                            }
+                        }
+                        .clickable { onPhotoClick(photo) }
+                ) {
+                    PhotoCard(photo)
+                }
+            }
             if (hasMore) {
-                item(key = "load_more_footer") {
+                item(span = { GridItemSpan(columns) }, key = "load_more_footer") {
                     Box(
                         Modifier.fillMaxWidth().height(44.dp),
                         contentAlignment = Alignment.Center
@@ -245,42 +275,6 @@ private fun ScalingPhotoList(
                     }
                 }
             }
-            itemsIndexed(items, key = { _, p -> p.uri.toString() }) { _, photo ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(itemHeight)
-                        .graphicsLayer {
-                            // 显式读取滚动 SnapshotState，强制 draw 阶段每帧重算缩放。
-                            // 否则 lambda 会停留在 item 首次进入可见区那一刻算出的值
-                            // （那时在边缘→小），滚到中间仍然是小的 → "中间比旁边小"。
-                            listState.firstVisibleItemIndex
-                            listState.firstVisibleItemScrollOffset
-
-                            val info = listState.layoutInfo
-                            val anchor = info.viewportSize.height / 2f
-                            // 用 uri 作 key 匹配，而不是 itemsIndexed 的 index：
-                            // 顶部"加载更多"footer 会占一个 index，导致 index 整体错位一项。
-                            val mine = info.visibleItemsInfo
-                                .firstOrNull { it.key == photo.uri.toString() }
-                            if (mine != null && mine.size > 0 && anchor > 0f) {
-                                val itemCenter = mine.offset + mine.size / 2f
-                                val distance = kotlin.math.abs(itemCenter - anchor)
-                                // 用 item 自身高度的 1.4 倍作衰减半径：相邻项就有明显大小差，
-                                // 中心项最大。二次缓动让中心区更饱满、边缘收敛更平滑。
-                                val t = (distance / (mine.size * 1.4f)).coerceIn(0f, 1f)
-                                val eased = t * t
-                                val sc = 1.28f - 0.73f * eased   // 中心 1.28 → 边缘 0.55
-                                scaleX = sc
-                                scaleY = sc
-                                alpha = 1f - 0.72f * t
-                            }
-                        }
-                        .clickable { onPhotoClick(photo) }
-                ) {
-                    PhotoCard(photo)
-                }
-            }
         }
     }
 }
@@ -289,7 +283,7 @@ private fun ScalingPhotoList(
 private fun PhotoCard(photo: Photo) {
     Card(
         modifier = Modifier.fillMaxSize(),
-        shape = RoundedCornerShape(20.dp),
+        shape = RoundedCornerShape(14.dp),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
@@ -305,16 +299,16 @@ private fun PhotoCard(photo: Photo) {
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .fillMaxWidth()
-                    .height(38.dp)
+                    .height(26.dp)
                     .background(Color.Black.copy(alpha = 0.55f)),
                 contentAlignment = Alignment.CenterStart
             ) {
                 Text(
                     photo.displayName,
                     color = Color.White,
-                    fontSize = 12.sp,
+                    fontSize = 10.sp,
                     maxLines = 1,
-                    modifier = Modifier.padding(horizontal = 12.dp)
+                    modifier = Modifier.padding(horizontal = 8.dp)
                 )
             }
         }
