@@ -126,7 +126,7 @@ private fun SettingsMain(
             SettingButton(
                 icon = Icons.Filled.Cached,
                 title = "表冠适配",
-                subtitle = "${crownMode.label} · ${String.format("%.1f", crownSpeed)}x",
+                subtitle = "${crownMode.label} · ${formatSpeed(crownSpeed)}x",
                 onClick = onOpenCrown,
                 itemKey = "row_crown"
             )
@@ -273,17 +273,29 @@ private fun CrownSettings(
         item(key = "crown_speed") {
             Box(Modifier.fillMaxWidth().scalingItem("crown_speed", scale = false)) {
                 Column {
-                    Text("灵敏度  ${String.format("%.1f", speed)}x",
+                    Text("灵敏度  ${formatSpeed(speed)}x",
                         style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary)
                     Spacer(Modifier.height(4.dp))
+                    // 对数轴：滑杆位置 0~1 等比映射到 0.1x~10.0x
                     Slider(
-                        value = speed,
-                        valueRange = CrownPrefs.SPEED_MIN..CrownPrefs.SPEED_MAX,
-                        onValueChange = { speed = it },
+                        value = CrownPrefs.speedToSlider(speed),
+                        valueRange = 0f..1f,
+                        onValueChange = { speed = CrownPrefs.sliderToSpeed(it) },
                         onValueChangeFinished = { commit() },
                         modifier = Modifier.fillMaxWidth()
                     )
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("0.1x", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("1.0x", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("10.0x", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }
@@ -466,3 +478,8 @@ private fun DiagLine(label: String, value: String) {
             color = MaterialTheme.colorScheme.onBackground)
     }
 }
+
+/** 灵敏度显示：小于 1x 保留两位（0.15x），1x 以上保留一位（2.5x / 10.0x） */
+private fun formatSpeed(speed: Float): String =
+    if (speed < 1f) String.format(java.util.Locale.US, "%.2f", speed)
+    else String.format(java.util.Locale.US, "%.1f", speed)
