@@ -24,10 +24,9 @@ import kotlin.math.abs
 /**
  * Wear OS 风格缩放滚动列表 —— 设置主页、二级菜单等全屏列表用。
  *
- * v0.18 起：列表项「整体」参与居中放大 —— 按钮有较小的基础宽度，居中时放大到最大
- * （约为屏幕宽度），越靠上下边缘越小。缩放锚点是每项自身中心（居中项位于屏幕中心，
- * 放大后向两侧扩到接近满屏），因此「屏幕宽度」是放大后的最大尺寸，而非每项默认宽度。
- * 布局占位固定、间隔由 spacedBy 控制（v0.18 起 6dp）。
+ * v0.21 起对齐官方 TransformingLazyColumn 机制：按钮满宽，居中项为正常大小（≈满屏宽），
+ * 越靠上下边缘越小越淡；缩放「只缩不放」（系数 ≤ 1），因此按钮始终待在布局框内、
+ * 间距恒定、不再重叠。布局占位固定、间隔由 spacedBy 控制。
  */
 @Composable
 fun ScalingScrollColumn(
@@ -38,8 +37,8 @@ fun ScalingScrollColumn(
 ) {
     val listState = rememberLazyListState()
 
-    // 表冠平滑滚动：离散事件累加成目标位移后逐帧逼近，避免一格一格的顿挫
-    SmoothCrownScroll(crownEvents) { step ->
+    // 表冠滚动：照搬 f-x，事件到达直接 scrollBy，即时跟手、无阻尼
+    CrownScroll(crownEvents) { step ->
         listState.scroll { scrollBy(step) }
     }
 
@@ -54,14 +53,15 @@ fun ScalingScrollColumn(
 }
 
 /**
- * 列表项「整体」居中缩放 + 边缘淡出（按钮、标题用）。
+ * 列表项「只缩不放」的圆屏形变 + 边缘淡出（按钮、标题用）—— 参照 Wear OS 官方
+ * TransformingLazyColumn + SurfaceTransformation：居中项是正常大小，越靠边缘越缩小淡出。
  *
- * 测量自身中心到屏幕中心的距离：居中最大、边缘最小。缩放作用于整个 item，
- * 于是按钮会真正地居中放大（最大≈屏幕宽），而不是只放大文字。
- * 用 item 在窗口中的真实 Y 坐标（positionInRoot）计算，graphicsLayer 在绘制阶段
- * 读取该值重绘，不触发重组。
+ * 关键：缩放系数始终 ≤ 1（居中 1.0 → 边缘 0.70）。绘制层缩放不改变布局占位，
+ * 若像旧版那样把居中项放大到 1.3 倍，按钮会向外膨胀侵入固定间距、相互重叠。
+ * 只缩不放则按钮永远待在自己的布局框内，间距恒定、绝不重叠，且视觉上正是
+ * 「居中满宽最大、边缘缩小」的官方设置列表效果。
  *
- * @param scale 为 false 时只做淡出、不缩放（用于较长的说明/诊断文本，避免放大后溢出圆屏）
+ * @param scale 为 false 时只做淡出、不缩放（用于较长的说明/诊断文本）
  */
 @Composable
 fun Modifier.scalingItem(key: String, scale: Boolean = true): Modifier {
@@ -84,11 +84,12 @@ fun Modifier.scalingItem(key: String, scale: Boolean = true): Modifier {
             if (measured.value && vc > 0f) {
                 val t = (abs(cy - vc) / (vc * 1.05f)).coerceIn(0f, 1f)
                 if (scale) {
-                    val s = 1.30f - 0.45f * (t * t)   // 居中 1.30 → 边缘 0.85
+                    // 只缩不放：居中 1.00 → 边缘 0.70，永不超出布局占位、按钮不再重叠
+                    val s = 1.0f - 0.30f * (t * t)
                     scaleX = s
                     scaleY = s
                 }
-                alpha = 1f - 0.42f * t
+                alpha = 1f - 0.45f * t
             }
         }
 }

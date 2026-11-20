@@ -26,8 +26,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 
 /**
- * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有居中放大 + 表冠滚动）。
- * 按钮有较小的基础宽度，居中时整体放大到接近满屏；间隔固定 6dp。
+ * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有居中形变 + 表冠滚动）。
+ * 按钮满宽，居中正常大小、边缘缩小淡出（Wear OS 官方 TransformingLazyColumn 风格）；间隔固定。
  */
 @Composable
 fun SettingsScreen(
@@ -254,7 +254,7 @@ private fun CrownSettings(
             item(key = "crown_mode_${m.name}") {
                 val mk = "crown_mode_${m.name}"
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    val btnMod = Modifier.fillMaxWidth(0.64f).height(42.dp).scalingItem(mk)
+                    val btnMod = Modifier.fillMaxWidth().height(42.dp).scalingItem(mk)
                     val selected = mode == m
                     if (selected) {
                         Button(onClick = { mode = m; commit() }, modifier = btnMod) {
@@ -329,7 +329,7 @@ private fun ThemeSettings(
             item(key = "theme_${mode.name}") {
                 val mk = "theme_${mode.name}"
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    val btnMod = Modifier.fillMaxWidth(0.64f).height(42.dp).scalingItem(mk)
+                    val btnMod = Modifier.fillMaxWidth().height(42.dp).scalingItem(mk)
                     val selected = current == mode
                     if (selected) {
                         Button(onClick = { viewModel.setThemeMode(mode) }, modifier = btnMod) {
@@ -347,8 +347,8 @@ private fun ThemeSettings(
 }
 
 /**
- * Material3 标准全圆角按钮：外层满宽占位并居中，按钮本身有较小基础宽度（0.74 屏宽），
- * 由 [scalingItem] 整体居中放大 —— 居中时放大到接近满屏，边缘缩小。
+ * Material3 标准全圆角按钮（Wear OS pill 风格）：满宽。
+ * 由 [scalingItem] 做「只缩不放」形变 —— 居中正常大小（≈满屏宽），边缘缩小淡出。
  */
 @Composable
 private fun SettingButton(
@@ -362,7 +362,7 @@ private fun SettingButton(
         Button(
             onClick = onClick,
             modifier = Modifier
-                .fillMaxWidth(0.64f)
+                .fillMaxWidth()
                 .height(46.dp)
                 .scalingItem(itemKey),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
@@ -446,7 +446,7 @@ private fun ScanDiagSettings(
         item(key = "diag_rescan") {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Button(onClick = { viewModel.refresh() },
-                    modifier = Modifier.fillMaxWidth(0.64f).height(42.dp).scalingItem("diag_rescan")) {
+                    modifier = Modifier.fillMaxWidth().height(42.dp).scalingItem("diag_rescan")) {
                     Text("重新扫描")
                 }
             }

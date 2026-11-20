@@ -136,12 +136,8 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     val crownEvents: SharedFlow<Float> = _crownEvents
 
     /**
-     * 表冠增量投递：保留原始浮点增量，不做"攒够 1 格"的离散化。
-     *
-     * 之前这里把小数攒够 1 格才发、发完连余数一起清零，等于把表冠增量量化成整格，
-     * 再被下游瞬间 scrollBy 一大段 —— 这正是"一格一格"顿挫的来源。
-     * 现在下游 [SmoothCrownScroll] 会自行对所有浮点增量求和并用阻尼逐帧逼近，
-     * 因此这里必须每个增量都原样投递（包括 0.2~0.8 的小数），距离才守恒、才连贯。
+     * 表冠增量投递：每个事件原样投递，不做任何累积或离散化。
+     * 下游 [CrownScroll] 照搬 f-x：收到即 scrollBy，即时跟手、无阻尼。
      */
     fun pushCrown(delta: Float) {
         if (delta == 0f || !delta.isFinite()) return

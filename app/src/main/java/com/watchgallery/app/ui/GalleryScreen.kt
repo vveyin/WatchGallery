@@ -222,8 +222,8 @@ private fun ScalingPhotoList(
     // 每张照片的屏幕矩形（px），供滑动刷选判定命中用。key = uri 字符串。
     val cellRects = remember { mutableMapOf<String, Rect>() }
 
-    // 表冠平滑滚动：离散事件累加成目标位移后逐帧逼近，避免一格一格的顿挫
-    SmoothCrownScroll(crownEvents) { step ->
+    // 表冠滚动：照搬 f-x，事件到达直接 scrollBy，即时跟手、无阻尼
+    CrownScroll(crownEvents) { step ->
         gridState.scroll { scrollBy(step) }
     }
 
