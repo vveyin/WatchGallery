@@ -30,7 +30,7 @@ private sealed class UpdateState {
     data object Checking : UpdateState()
     data class UpToDate(val remoteName: String) : UpdateState()
     data class Found(val info: ReleaseInfo) : UpdateState()
-    data class Downloading(val progress: Float, val info: ReleaseInfo) : UpdateState()
+    data class Downloading(val downloaded: Long, val total: Long, val info: ReleaseInfo) : UpdateState()
     data class Ready(val info: ReleaseInfo) : UpdateState()
     data class Error(val message: String) : UpdateState()
 }
@@ -56,7 +56,10 @@ fun UpdateScreen(
     fun checkUpdate() {
         state = UpdateState.Checking
         scope.launch {
-            val result = UpdateChecker.check(BuildConfig.GITHUB_OWNER, BuildConfig.GITHUB_REPO)
+            val result = UpdateChecker.check(
+                BuildConfig.GITEE_OWNER, BuildConfig.GITEE_REPO,
+                BuildConfig.GITHUB_OWNER, BuildConfig.GITHUB_REPO
+            )
             state = result.fold(
                 onSuccess = { info ->
                     // 两边都从 versionName 取序号，不能拿 tag 的序号比 APK 的 versionCode
@@ -75,11 +78,10 @@ fun UpdateScreen(
     }
 
     fun download(info: ReleaseInfo) {
-        state = UpdateState.Downloading(0f, info)
+        state = UpdateState.Downloading(0L, info.apkSizeBytes, info)
         scope.launch {
-            val result = ApkDownloader.download(context, info.apkUrl) { downloaded, total ->
-                val p = if (total > 0) downloaded.toFloat() / total else 0f
-                state = UpdateState.Downloading(p, info)
+            val result = ApkDownloader.download(context, info.allUrls) { downloaded, total ->
+                state = UpdateState.Downloading(downloaded, total, info)
             }
             state = result.fold(
                 onSuccess = { UpdateState.Ready(info) },
@@ -156,17 +158,30 @@ fun UpdateScreen(
                     Text("正在下载 v${s.info.versionName}",
                         style = MaterialTheme.typography.titleMedium)
                     Spacer(Modifier.height(12.dp))
-                    LinearProgressIndicator(
-                        progress = { s.progress.coerceIn(0f, 1f) },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(10.dp)
-                            .clip(RoundedCornerShape(6.dp))
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text("${(s.progress * 100).toInt()}%",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    val percent = if (s.total > 0) {
+                        (s.downloaded.toFloat() / s.total).coerceIn(0f, 1f)
+                    } else null
+                    if (percent != null) {
+                        LinearProgressIndicator(
+                            progress = { percent },
+                            modifier = Modifier.fillMaxWidth().height(10.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text("${(percent * 100).toInt()}%  ${fmtMb(s.downloaded)} / ${fmtMb(s.total)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    } else {
+                        // 服务器没给总大小：用不定态进度条 + 已下载字节，能看出在动
+                        LinearProgressIndicator(
+                            modifier = Modifier.fillMaxWidth().height(10.dp)
+                                .clip(RoundedCornerShape(6.dp))
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text("已下载 ${fmtMb(s.downloaded)}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
                 is UpdateState.Ready -> {
                     StatusIcon(Icons.Filled.InstallMobile)
@@ -240,4 +255,11 @@ private fun PrimaryButton(text: String, onClick: () -> Unit) {
     ) {
         Text(text, style = MaterialTheme.typography.titleMedium)
     }
+}
+
+/** 字节数格式化为 MB，方便确认下载确实在推进 */
+private fun fmtMb(bytes: Long): String {
+    if (bytes <= 0) return "0 MB"
+    val mb = bytes / 1024.0 / 1024.0
+    return String.format("%.1f MB", mb)
 }
