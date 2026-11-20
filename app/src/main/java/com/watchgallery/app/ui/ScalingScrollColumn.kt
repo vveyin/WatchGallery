@@ -23,16 +23,16 @@ import kotlin.math.abs
 /**
  * Wear OS 风格缩放滚动列表 —— 设置主页、二级菜单等全屏列表用。
  *
- * v0.17 起：按钮外框尺寸与间隔完全固定（fillMaxWidth + 固定高度 + spacedBy），
- * 不再用 graphicsLayer 缩放整个 item —— 绘制层缩放不改变布局占位，放大后
- * 按钮会向外膨胀侵入间隔，导致「间隔忽大忽小 / 重叠」。居中聚焦改为只缩放
- * 按钮的「内部内容」（文字/图标，见 [focusScale]），外框和间隔恒定。
+ * v0.18 起：列表项「整体」参与居中放大 —— 按钮有较小的基础宽度，居中时放大到最大
+ * （约为屏幕宽度），越靠上下边缘越小。缩放锚点是每项自身中心（居中项位于屏幕中心，
+ * 放大后向两侧扩到接近满屏），因此「屏幕宽度」是放大后的最大尺寸，而非每项默认宽度。
+ * 布局占位固定、间隔由 spacedBy 控制（v0.18 起 6dp）。
  */
 @Composable
 fun ScalingScrollColumn(
     crownEvents: Flow<Float>,
     contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 76.dp),
-    verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(12.dp),
+    verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(6.dp),
     content: LazyListScope.() -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -53,15 +53,17 @@ fun ScalingScrollColumn(
 }
 
 /**
- * 列表条目的淡出包装：只按条目中心到屏幕中心的距离调整 alpha（居中清晰、边缘淡出），
- * 不改变任何尺寸，因此不会侵入固定间隔。
+ * 列表项「整体」居中缩放 + 边缘淡出（按钮、标题用）。
  *
- * 用 item 在窗口中的真实 Y 坐标（positionInRoot）与屏幕高度一半比较；
- * onGloballyPositioned 在滚动导致位置变化时每帧回调，graphicsLayer 在绘制阶段
+ * 测量自身中心到屏幕中心的距离：居中最大、边缘最小。缩放作用于整个 item，
+ * 于是按钮会真正地居中放大（最大≈屏幕宽），而不是只放大文字。
+ * 用 item 在窗口中的真实 Y 坐标（positionInRoot）计算，graphicsLayer 在绘制阶段
  * 读取该值重绘，不触发重组。
+ *
+ * @param scale 为 false 时只做淡出、不缩放（用于较长的说明/诊断文本，避免放大后溢出圆屏）
  */
 @Composable
-fun Modifier.scalingItem(key: String): Modifier {
+fun Modifier.scalingItem(key: String, scale: Boolean = true): Modifier {
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val centerY = remember(key) { mutableFloatStateOf(-1f) }
@@ -74,38 +76,14 @@ fun Modifier.scalingItem(key: String): Modifier {
         .graphicsLayer {
             val cy = centerY.floatValue
             val vc = screenHeightPx / 2f
-            alpha = if (cy >= 0f && vc > 0f) {
-                val t = (abs(cy - vc) / (vc * 0.95f)).coerceIn(0f, 1f)
-                1f - 0.42f * t
-            } else 1f
-        }
-}
-
-/**
- * 内容聚焦缩放：测量自身中心，按到屏幕中心的距离缩放自身（用于按钮内的文字/图标）。
- *
- * 与 [scalingItem] 不同，这里真正应用 scaleX/scaleY —— 但作用对象是按钮「内部内容」
- * 而非按钮外框，所以按钮尺寸与间隔保持恒定，只会让居中项的文字/图标更大更清晰。
- */
-@Composable
-fun Modifier.focusScale(): Modifier {
-    val density = LocalDensity.current
-    val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
-    val centerY = remember { mutableFloatStateOf(-1f) }
-
-    return this
-        .onGloballyPositioned { coords ->
-            val pos = coords.positionInRoot()
-            centerY.floatValue = pos.y + coords.size.height / 2f
-        }
-        .graphicsLayer {
-            val cy = centerY.floatValue
-            val vc = screenHeightPx / 2f
             if (cy >= 0f && vc > 0f) {
                 val t = (abs(cy - vc) / (vc * 0.9f)).coerceIn(0f, 1f)
-                val s = 1.12f - 0.30f * (t * t)   // 居中 1.12 → 边缘 0.82
-                scaleX = s
-                scaleY = s
+                if (scale) {
+                    val s = 1.38f - 0.58f * (t * t)   // 居中 1.38 → 边缘 0.80
+                    scaleX = s
+                    scaleY = s
+                }
+                alpha = 1f - 0.42f * t
             }
         }
 }

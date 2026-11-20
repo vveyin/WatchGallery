@@ -28,6 +28,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -176,6 +177,7 @@ private fun ScalingPhotoList(
     val gridState = rememberLazyGridState()
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
 
     // 表冠平滑滚动：离散事件累加成目标位移后逐帧逼近，避免一格一格的顿挫
     SmoothCrownScroll(crownEvents) { step ->
@@ -205,31 +207,44 @@ private fun ScalingPhotoList(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(items, key = { it.uri.toString() }) { photo ->
-                val centerY = remember { mutableFloatStateOf(-1f) }
+                // 同一排的所有照片共享一个「排缩放值」，并以屏幕水平中线为锚点统一缩放，
+                // 这样整排是连在一起放大/缩小的，而不是每张照片各自以自身中心缩。
+                val rowCenterY = remember { mutableFloatStateOf(-1f) }
+                val leftX = remember { mutableFloatStateOf(0f) }
+                val cellWidth = remember { mutableFloatStateOf(1f) }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(1f)
                         .onGloballyPositioned { coords ->
                             val pos = coords.positionInRoot()
-                            centerY.floatValue = pos.y + coords.size.height / 2f
+                            rowCenterY.floatValue = pos.y + coords.size.height / 2f
+                            leftX.floatValue = pos.x
+                            cellWidth.floatValue = coords.size.width.toFloat().coerceAtLeast(1f)
                         }
                         .graphicsLayer {
                             gridState.firstVisibleItemIndex
                             gridState.firstVisibleItemScrollOffset
 
-                            val cy = centerY.floatValue
+                            val cy = rowCenterY.floatValue
                             val viewportCenter = screenHeightPx / 2f
                             if (cy >= 0f && viewportCenter > 0f) {
                                 val distance = kotlin.math.abs(cy - viewportCenter)
-                                // 用真实屏幕坐标：正中间那一行最大，上下渐小淡出。
+                                // 用真实屏幕坐标：正中间那一排最大，上下渐小淡出。
+                                // 缩放只由「行」的 Y 决定 —— 同一排的每张照片得到完全相同的 sc。
                                 val radius = viewportCenter * 0.9f
                                 val t = (distance / radius).coerceIn(0f, 1f)
                                 val eased = t * t
-                                val sc = 1.12f - 0.34f * eased   // 正中 1.12 → 边缘 0.78
+                                val sc = 1.10f - 0.32f * eased   // 正中 1.10 → 边缘 0.78
                                 scaleX = sc
                                 scaleY = sc
                                 alpha = 1f - 0.5f * t
+                                // 锚点统一到屏幕水平中线：同排照片围绕同一条竖线缩放，
+                                // 间距随缩放同步变化，视觉上整排连在一起。
+                                transformOrigin = TransformOrigin(
+                                    pivotFractionX = ((screenWidthPx / 2f) - leftX.floatValue) / cellWidth.floatValue,
+                                    pivotFractionY = 0.5f
+                                )
                             }
                         }
                         .clickable { onPhotoClick(photo) }
