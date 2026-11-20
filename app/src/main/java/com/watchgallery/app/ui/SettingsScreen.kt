@@ -101,22 +101,25 @@ private fun SettingsMain(
     val report by viewModel.scanReport.collectAsState()
     val context = LocalContext.current
 
-    RoundSafeArea(isRound) {
-        Column(Modifier.fillMaxSize()) {
-            SettingsHeader("设置", onBack)
-            Column(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberCrownScrollState(crownEvents)),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
+    ScalingScrollColumn(crownEvents = crownEvents) {
+        item(key = "settings_title") {
+            Box(Modifier.fillMaxWidth().scalingItem("settings_title"), contentAlignment = Alignment.Center) {
+                Text("设置", style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+        item(key = "row_crown") {
+            Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).scalingItem("row_crown")) {
                 SettingRow(
                     icon = Icons.Filled.Cached,
                     title = "表冠适配",
                     subtitle = "${crownMode.label} · ${String.format("%.1f", crownSpeed)}x",
                     onClick = onOpenCrown
                 )
+            }
+        }
+        item(key = "row_theme") {
+            Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).scalingItem("row_theme")) {
                 SettingRow(
                     icon = when (themeMode) {
                         ThemeMode.DARK -> Icons.Filled.DarkMode
@@ -131,12 +134,20 @@ private fun SettingsMain(
                     },
                     onClick = onOpenTheme
                 )
+            }
+        }
+        item(key = "row_diag") {
+            Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).scalingItem("row_diag")) {
                 SettingRow(
                     icon = Icons.Filled.Search,
                     title = "扫描诊断",
                     subtitle = "媒体库 ${report.imagesRows} 条 · 目录 ${report.dirHits} 张 · 导入 ${report.importedCount} 张",
                     onClick = onOpenDiag
                 )
+            }
+        }
+        item(key = "row_log") {
+            Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).scalingItem("row_log")) {
                 SettingRow(
                     icon = Icons.Filled.ContentCopy,
                     title = "复制日志",
@@ -147,6 +158,10 @@ private fun SettingsMain(
                         Toast.makeText(context, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
                     }
                 )
+            }
+        }
+        item(key = "row_about") {
+            Box(Modifier.fillMaxWidth().padding(vertical = 4.dp).scalingItem("row_about")) {
                 SettingRow(
                     icon = Icons.Filled.Info,
                     title = "关于",
@@ -326,16 +341,11 @@ private fun ThemeSettings(
 }
 
 @Composable
+@Suppress("UNUSED_PARAMETER")
 private fun SettingsHeader(title: String, onBack: () -> Unit) {
-    Row(
-        Modifier.fillMaxWidth().padding(bottom = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        IconButton(onClick = onBack, modifier = Modifier.size(32.dp)) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回", modifier = Modifier.size(18.dp))
-        }
-        Spacer(Modifier.width(2.dp))
-        Text(title, style = MaterialTheme.typography.titleLarge,
+    // 返回改为边缘右划手势（见 SwipeToGoBack），此处不再放左上角返回键
+    Box(Modifier.fillMaxWidth().padding(bottom = 8.dp), contentAlignment = Alignment.Center) {
+        Text(title, style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onBackground, maxLines = 1)
     }
 }
