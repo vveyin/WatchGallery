@@ -11,6 +11,7 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.SnackbarHost
@@ -18,6 +19,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -30,6 +32,7 @@ import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.CrashLogger
 import com.watchgallery.app.ui.*
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 
@@ -253,54 +256,61 @@ private fun AppNavigation(
     val current = backStack.last()
     val below = if (backStack.size >= 2) backStack[backStack.size - 2] else null
 
-    // 渲染某一层界面；interactive=false 的底层只做视觉呈现，不响应点击
+    // 渲染某一层界面。
+    // - 每层都垫一层不透明纯黑背景：圆屏上右划露出下层时不会被上一层的内容透视叠加；
+    //   更重要的是避免缩放列表条目 alpha 淡出后透出下层画面（截图里设置页透出相册的根因）。
+    // - 底层（interactive=false）传空表冠流：否则上下两层同时 collect crownEvents，
+    //   转一次表冠会同时滚动两个列表。底层只做静态视觉呈现，也不接收点击。
     @Composable
     fun ScreenLayer(screen: Screen, interactive: Boolean) {
-        when (screen) {
-            is Screen.Gallery -> GalleryScreen(
-                viewModel = viewModel,
-                isRound = isRound,
-                crownEvents = crownEvents,
-                onPhotoClick = { photo ->
-                    if (interactive) { currentPhoto = photo; navigate(Screen.Viewer) }
-                },
-                onOpenSettings = { if (interactive) navigate(Screen.Settings) },
-                onCheckUpdate = { if (interactive) navigate(Screen.Update) }
-            )
-            is Screen.Viewer -> {
-                val idx = photos.indexOfFirst { it.uri == currentPhoto?.uri }.coerceAtLeast(0)
-                PhotoViewerScreen(
-                    photos = photos,
-                    initialIndex = idx,
-                    isRound = isRound,
-                    crownEvents = crownEvents,
-                    onBack = { if (interactive) goBack() },
-                    onEdit = { photo ->
-                        if (interactive) { currentPhoto = photo; navigate(Screen.Editor) }
-                    }
-                )
-            }
-            is Screen.Editor -> currentPhoto?.let { photo ->
-                EditScreen(
-                    photo = photo,
+        val layerCrown = if (interactive) crownEvents else emptyFlow()
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            when (screen) {
+                is Screen.Gallery -> GalleryScreen(
                     viewModel = viewModel,
                     isRound = isRound,
+                    crownEvents = layerCrown,
+                    onPhotoClick = { photo ->
+                        if (interactive) { currentPhoto = photo; navigate(Screen.Viewer) }
+                    },
+                    onOpenSettings = { if (interactive) navigate(Screen.Settings) },
+                    onCheckUpdate = { if (interactive) navigate(Screen.Update) }
+                )
+                is Screen.Viewer -> {
+                    val idx = photos.indexOfFirst { it.uri == currentPhoto?.uri }.coerceAtLeast(0)
+                    PhotoViewerScreen(
+                        photos = photos,
+                        initialIndex = idx,
+                        isRound = isRound,
+                        crownEvents = layerCrown,
+                        onBack = { if (interactive) goBack() },
+                        onEdit = { photo ->
+                            if (interactive) { currentPhoto = photo; navigate(Screen.Editor) }
+                        }
+                    )
+                }
+                is Screen.Editor -> currentPhoto?.let { photo ->
+                    EditScreen(
+                        photo = photo,
+                        viewModel = viewModel,
+                        isRound = isRound,
+                        onBack = { if (interactive) goBack() }
+                    )
+                }
+                is Screen.Settings -> SettingsScreen(
+                    viewModel = viewModel,
+                    isRound = isRound,
+                    crownEvents = layerCrown,
+                    onBack = { if (interactive) goBack() },
+                    onCrownPrefsChanged = onCrownPrefsChanged
+                )
+                is Screen.Update -> UpdateScreen(
+                    viewModel = viewModel,
+                    isRound = isRound,
+                    crownEvents = layerCrown,
                     onBack = { if (interactive) goBack() }
                 )
             }
-            is Screen.Settings -> SettingsScreen(
-                viewModel = viewModel,
-                isRound = isRound,
-                crownEvents = crownEvents,
-                onBack = { if (interactive) goBack() },
-                onCrownPrefsChanged = onCrownPrefsChanged
-            )
-            is Screen.Update -> UpdateScreen(
-                viewModel = viewModel,
-                isRound = isRound,
-                crownEvents = crownEvents,
-                onBack = { if (interactive) goBack() }
-            )
         }
     }
 

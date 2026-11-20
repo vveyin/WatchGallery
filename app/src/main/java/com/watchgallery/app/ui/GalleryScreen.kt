@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
@@ -31,8 +32,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -201,6 +206,8 @@ private fun ScalingPhotoList(
     onPhotoClick: (Photo) -> Unit
 ) {
     val gridState = rememberLazyGridState()
+    val density = LocalDensity.current
+    val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
 
     LaunchedEffect(crownEvents) {
         crownEvents.collect { delta ->
@@ -231,25 +238,28 @@ private fun ScalingPhotoList(
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             items(items, key = { it.uri.toString() }) { photo ->
+                val centerY = remember { mutableFloatStateOf(-1f) }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .aspectRatio(1f)
+                        .onGloballyPositioned { coords ->
+                            val pos = coords.positionInRoot()
+                            centerY.floatValue = pos.y + coords.size.height / 2f
+                        }
                         .graphicsLayer {
                             gridState.firstVisibleItemIndex
                             gridState.firstVisibleItemScrollOffset
 
-                            val info = gridState.layoutInfo
-                            val anchor = info.viewportSize.height / 2f
-                            val mine = info.visibleItemsInfo
-                                .firstOrNull { it.key == photo.uri.toString() }
-                            if (mine != null && mine.size.height > 0 && anchor > 0f) {
-                                val itemCenter = mine.offset.y + mine.size.height / 2f
-                                val distance = kotlin.math.abs(itemCenter - anchor)
-                                // 以半屏高为衰减半径，中间的「行」最大、上下渐小淡出。
-                                val t = (distance / (info.viewportSize.height / 2f)).coerceIn(0f, 1f)
+                            val cy = centerY.floatValue
+                            val viewportCenter = screenHeightPx / 2f
+                            if (cy >= 0f && viewportCenter > 0f) {
+                                val distance = kotlin.math.abs(cy - viewportCenter)
+                                // 用真实屏幕坐标：正中间那一行最大，上下渐小淡出。
+                                val radius = viewportCenter * 0.9f
+                                val t = (distance / radius).coerceIn(0f, 1f)
                                 val eased = t * t
-                                val sc = 1.12f - 0.34f * eased   // 中心 1.12 → 边缘 0.78
+                                val sc = 1.12f - 0.34f * eased   // 正中 1.12 → 边缘 0.78
                                 scaleX = sc
                                 scaleY = sc
                                 alpha = 1f - 0.5f * t
