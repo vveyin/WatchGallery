@@ -81,12 +81,20 @@ class MediaRepository(private val context: Context) {
     suspend fun scan(): ScanResult = withContext(Dispatchers.IO) {
         val errors = mutableListOf<String>()
         val collected = LinkedHashMap<String, Photo>()
+        val usedIds = HashSet<Long>()
         var imagesRows = 0
         var filesRows = 0
         var dirHits = 0
 
         fun addAll(list: List<Photo>) {
-            list.forEach { collected.putIfAbsent(it.uri.toString(), it) }
+            list.forEach { photo ->
+                // 双重去重：uri 相同（同一条目被多卷查到）或 id 相同（跨卷同 _ID）都跳过。
+                // 只按 uri 去重时，两张 uri 不同但 _ID 相同的照片会让 Compose 的
+                // key 重复，直接抛 IllegalArgumentException 崩溃（v0.8 实测）。
+                if (collected.containsKey(photo.uri.toString())) return@forEach
+                if (!usedIds.add(photo.id)) return@forEach
+                collected[photo.uri.toString()] = photo
+            }
         }
 
         // 1) images 表（逐卷）
