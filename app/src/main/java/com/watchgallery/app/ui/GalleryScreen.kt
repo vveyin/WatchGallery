@@ -8,6 +8,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -122,6 +123,21 @@ fun GalleryScreen(
     val importLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris -> viewModel.importPhotos(uris) }
+
+    // 系统删除确认弹窗：MediaStore.createDeleteRequest 生成的 IntentSender，
+    // 由系统自己的界面询问「删除这些照片？」，用户确认后系统执行删除。
+    val deleteRequest by viewModel.deleteRequest.collectAsState()
+    val deleteLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.onDeleteRequestResult(result.resultCode == Activity.RESULT_OK)
+    }
+    LaunchedEffect(deleteRequest) {
+        val sender = deleteRequest?.sender ?: return@LaunchedEffect
+        runCatching {
+            deleteLauncher.launch(IntentSenderRequest.Builder(sender).build())
+        }.onFailure { viewModel.onDeleteRequestUnavailable() }
+    }
 
     fun launchImport() {
         runCatching { importLauncher.launch(arrayOf("image/*")) }
