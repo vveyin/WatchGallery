@@ -1,5 +1,9 @@
 package com.watchgallery.app.ui
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -17,12 +21,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.watchgallery.app.data.CrownMode
 import com.watchgallery.app.data.CrownPrefs
 import com.watchgallery.app.theme.ThemeMode
+import com.watchgallery.app.util.CrashLogger
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -93,6 +99,7 @@ private fun SettingsMain(
     val crownMode by viewModel.crownMode.collectAsState()
     val crownSpeed by viewModel.crownSpeed.collectAsState()
     val report by viewModel.scanReport.collectAsState()
+    val context = LocalContext.current
 
     RoundSafeArea(isRound) {
         Column(Modifier.fillMaxSize()) {
@@ -129,6 +136,16 @@ private fun SettingsMain(
                     title = "扫描诊断",
                     subtitle = "媒体库 ${report.imagesRows} 条 · 目录 ${report.dirHits} 张 · 导入 ${report.importedCount} 张",
                     onClick = onOpenDiag
+                )
+                SettingRow(
+                    icon = Icons.Filled.ContentCopy,
+                    title = "复制日志",
+                    subtitle = "崩溃与运行日志，用于排查问题",
+                    onClick = {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("WatchGallery 日志", CrashLogger.read(context)))
+                        Toast.makeText(context, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                    }
                 )
                 SettingRow(
                     icon = Icons.Filled.Info,
