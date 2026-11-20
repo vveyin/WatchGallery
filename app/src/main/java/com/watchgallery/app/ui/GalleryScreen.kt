@@ -56,8 +56,16 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.rememberAsyncImagePainter
 import com.watchgallery.app.data.Photo
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
+
+/**
+ * 多选手势判定速度阈值（px/ms）：手指离开起点后按这一段的平均速度分类手势。
+ * 低于阈值 = 慢速拖动 = 滚动列表；高于阈值 = 快速拖动 = 矩形刷选。
+ */
+private const val SELECT_SPEED_THRESHOLD = 0.5f
 
 private fun mediaPermission(): String =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
@@ -219,6 +227,18 @@ private fun ScalingPhotoList(
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
 
+    // 多选慢速拖动产生的滚动增量：手势回调处在受限协程作用域，不能直接调用
+    // gridState.scroll{}，故把增量投递到普通协程里再执行滚动。
+    val selectionScroll = remember {
+        MutableSharedFlow<Float>(
+            extraBufferCapacity = 64,
+            onBufferOverflow = BufferOverflow.DROP_OLDEST
+        )
+    }
+    LaunchedEffect(Unit) {
+        selectionScroll.collect { dy -> gridState.scroll { scrollBy(dy) } }
+    }
+
     // 每张照片的屏幕矩形（px），供滑动刷选判定命中用。key = uri 字符串。
     val cellRects = remember { mutableMapOf<String, Rect>() }
 
@@ -332,9 +352,12 @@ private fun ScalingPhotoList(
             }
         }
 
-        // 多选模式下的「刷选」覆盖层：手指划过哪些照片就选中哪些，与手机厂商相册同款。
-        // 不画任何框；沿手指每一段的移动轨迹密集采样，采样点落到哪张照片就把它加入选中。
-        // 手指从左上划到右下时，轨迹扫过区域里的所有照片都会被依次选中。
+        // 多选模式下的手势层：
+        //  1) 速度阈值判定：慢速拖动 = 滚动列表；快速拖动 = 复选照片。
+        //  2) 快速拖动采用「矩形区域填充」：从起点到当前位置形成矩形，
+        //     矩形覆盖到的所有照片都加入选中（左上角划到右下角 → 整块 N×N 全选）。
+        //  3) 完全没移动的轻点 = 切换起点照片的选中状态。
+        // 全程不画任何可见框，和手机厂商相册的滑动选择观感一致。
         if (selectionMode) {
             Box(
                 Modifier
@@ -343,37 +366,65 @@ private fun ScalingPhotoList(
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             down.consume()
+                            val anchor = down.position
                             var last = down.position
-                            var moved = false
+                            var lastTime = down.uptimeMillis
+                            // 用于速度判定的累计距离 / 累计时间（从按下到判定点）
+                            var accumDist = 0f
+                            var accumTime = 0L
+                            // 0=未判定, 1=滚动, 2=复选
+                            var mode = 0
                             var tapped = true
+
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Initial)
                                 if (event.changes.all { !it.pressed }) break
                                 val change = event.changes.first()
                                 change.consume()
                                 val cur = change.position
-                                if ((cur - down.position).getDistance() > 10f) {
-                                    moved = true
-                                    tapped = false
+                                val now = change.uptimeMillis
+
+                                val stepDist = (cur - last).getDistance()
+                                val stepTime = (now - lastTime).coerceAtLeast(1L)
+                                accumDist += stepDist
+                                accumTime += stepTime
+
+                                val fromAnchor = (cur - anchor).getDistance()
+                                if (fromAnchor > 8f) tapped = false
+
+                                // 手指离开起点约 20px 后，用这一段的平均速度判定手势类型，
+                                // 一旦判定就锁定到本手势结束，避免中途忽快忽慢来回切换。
+                                if (mode == 0 && fromAnchor > 20f) {
+                                    val avgVelocity = accumDist / accumTime.coerceAtLeast(1L) // px/ms
+                                    mode = if (avgVelocity >= SELECT_SPEED_THRESHOLD) 2 else 1
                                 }
-                                if (moved) {
-                                    // 沿 last→cur 这一段轨迹密集采样（每 ~8px 一个点），
-                                    // 避免手指滑得快时跳过中间的照片。命中即加入选中。
-                                    val dist = (cur - last).getDistance()
-                                    val steps = (dist / 8f).toInt().coerceAtLeast(1)
-                                    val hitUris = HashSet<String>()
-                                    for (i in 0..steps) {
-                                        val t = i / steps.toFloat()
-                                        val px = last.x + (cur.x - last.x) * t
-                                        val py = last.y + (cur.y - last.y) * t
-                                        hitCell(cellRects, Offset(px, py))
-                                            ?.let { hitUris.add(it) }
+
+                                when (mode) {
+                                    1 -> {
+                                        // 慢速：滚动列表（手指往下拖 → 内容往前，故取负）
+                                        selectionScroll.tryEmit(-(cur.y - last.y))
                                     }
-                                    if (hitUris.isNotEmpty()) onSelectRange(hitUris)
+                                    2 -> {
+                                        // 快速：从起点到当前位置形成矩形，覆盖到的照片全部选中。
+                                        // 加 3px 内边距，保证纯横向/纵向划动（矩形某一边为 0）也能命中。
+                                        val pad = 3f
+                                        val dragRect = Rect(
+                                            left = minOf(anchor.x, cur.x) - pad,
+                                            top = minOf(anchor.y, cur.y) - pad,
+                                            right = maxOf(anchor.x, cur.x) + pad,
+                                            bottom = maxOf(anchor.y, cur.y) + pad
+                                        )
+                                        val hitUris = HashSet<String>()
+                                        for ((uri, r) in cellRects) {
+                                            if (r.overlaps(dragRect)) hitUris.add(uri)
+                                        }
+                                        if (hitUris.isNotEmpty()) onSelectRange(hitUris)
+                                    }
                                 }
                                 last = cur
+                                lastTime = now
                             }
-                            // 抬起：完全没移动视为单击 —— 切换起点照片的选中状态
+                            // 抬起：完全没移动视为轻点 —— 切换起点照片的选中状态
                             if (tapped) {
                                 hitCell(cellRects, down.position)?.let { onToggle(it) }
                             }
