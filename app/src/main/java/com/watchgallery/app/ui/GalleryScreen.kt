@@ -10,6 +10,8 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -236,15 +238,18 @@ private fun ScalingPhotoList(
         )
     }
     LaunchedEffect(Unit) {
-        selectionScroll.collect { dy -> gridState.scroll { scrollBy(dy) } }
+        selectionScroll.collect { dy -> gridState.scrollBy(dy) }
     }
 
     // 每张照片的屏幕矩形（px），供滑动刷选判定命中用。key = uri 字符串。
     val cellRects = remember { mutableMapOf<String, Rect>() }
 
-    // 表冠滚动：照搬 f-x，事件到达直接 scrollBy，即时跟手、无阻尼
+    // 表冠滚动：照搬 f-x，事件到达直接 scrollBy，即时跟手、无阻尼。
+    // 关键：必须调用 LazyGridState.scrollBy（内部按像素即时滚动、不触发 overscroll 弹簧），
+    // 而不是 gridState.scroll{} 里那套会走 fling/overscroll 的 ScrollScope — 后者滚到
+    // 边界时会触发 Compose 的回弹动画，正是「滚动完向反方向弹一小段」的根因。
     CrownScroll(crownEvents) { step ->
-        gridState.scroll { scrollBy(step) }
+        gridState.scrollBy(step)
     }
 
     // 滑到倒数一排时预加载下一批
@@ -261,6 +266,11 @@ private fun ScalingPhotoList(
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val edgePad = (maxHeight / 2 - 72.dp).coerceAtLeast(24.dp)
+        // 关掉 Compose 的过度滚动回弹（stretch/glow）：表冠滚到列表边界时它会把内容
+        // 拉出再弹回，表现就是「滚动完向相反方向滚一小段」。f-x 的 Material2 LazyColumn
+        // 没有这套效果，这里显式关闭以对齐它的硬停止手感。
+        @OptIn(ExperimentalFoundationApi::class)
+        CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
         LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Fixed(columns),
@@ -351,6 +361,7 @@ private fun ScalingPhotoList(
                 }
             }
         }
+        } // CompositionLocalProvider(LocalOverscrollConfiguration provides null)
 
         // 多选模式下的手势层：
         //  1) 速度阈值判定：慢速拖动 = 滚动列表；快速拖动 = 复选照片。
