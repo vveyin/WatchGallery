@@ -43,6 +43,14 @@
 - **手动导入**：空相册可直接用系统文件选择器导入照片，内容复制进应用私有目录，永远读得到
 - **扫描诊断页**：设置 → 扫描诊断，展示权限、媒体库行数、目录命中、异常信息
 
+### 表冠消除反向回弹、对齐 f-x 手感（v0.23）
+- 用户反馈："f(x) 滚动很平滑，相册滚动完像有回弹，总是向反方向滚一小段"，逐行对比 f-x 找到三处差异并全部对齐：
+  - **去掉 OPPO 自适应增益**：旧代码 `|v| ≤ 2 → v*15`，把表冠停下瞬间的微小反向抖动放大成十几像素的反向跳动；改为照搬 f-x 直接返回原始轴值，滚动量统一交给灵敏度 `crownSpeed` 调节
+  - **关掉过度滚动回弹**：Material3 的 `LazyVerticalGrid`/`LazyColumn` 滚到边界会 stretch 再 spring-back（内容 padding 很大，频繁触边），是"反方向弹一小段"的主因；用 `CompositionLocalProvider(LocalOverscrollConfiguration provides null)` 显式关闭，对齐 f-x Material2 LazyColumn 的硬停止手感
+  - **直接 scrollBy**：由 `gridState.scroll { scrollBy }` 改为 `gridState.scrollBy(step)`（与 f-x `listState.scrollBy` 一致），不走会触发 fling/overscroll 的 ScrollScope
+- 相册、设置列表、更新页三处统一；多选、缩放、表冠采集双模式不变
+- versionCode=23 / versionName=0.23
+
 ### 多选手势：速度阈值 + 矩形区域填充（v0.22）
 - **速度阈值判定**：多选模式下拖动离开起点约 20px 后，按这段平均速度分类手势（阈值 0.5 px/ms）
   - 慢速拖动（<阈值）= 滚动列表：增量投递到普通协程再 `scrollBy`，跟手滚动
