@@ -219,13 +219,11 @@ fun UpdateScreen(
 }
 
 @Composable
+@Suppress("UNUSED_PARAMETER")
 private fun UpdateHeader(onBack: () -> Unit) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        IconButton(onClick = onBack) {
-            Icon(Icons.AutoMirrored.Filled.ArrowBack, "返回")
-        }
-        Spacer(Modifier.width(4.dp))
-        Text("检查更新", style = MaterialTheme.typography.headlineMedium,
+    // 返回改为边缘右划手势
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Text("检查更新", style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onBackground)
     }
 }
