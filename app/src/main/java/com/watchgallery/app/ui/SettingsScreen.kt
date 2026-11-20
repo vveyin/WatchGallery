@@ -269,7 +269,8 @@ private fun CrownSettings(
                             modifier = Modifier.fillMaxWidth().height(42.dp)
                         ) {
                             Text("${m.label} — ${m.description}",
-                                style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                                style = MaterialTheme.typography.labelMedium, maxLines = 1,
+                                modifier = Modifier.focusScale())
                         }
                     } else {
                         OutlinedButton(
@@ -277,7 +278,8 @@ private fun CrownSettings(
                             modifier = Modifier.fillMaxWidth().height(42.dp)
                         ) {
                             Text("${m.label} — ${m.description}",
-                                style = MaterialTheme.typography.labelMedium, maxLines = 1)
+                                style = MaterialTheme.typography.labelMedium, maxLines = 1,
+                                modifier = Modifier.focusScale())
                         }
                     }
                 }
@@ -347,14 +349,16 @@ private fun ThemeSettings(
                             onClick = { viewModel.setThemeMode(mode) },
                             modifier = Modifier.fillMaxWidth().height(42.dp)
                         ) {
-                            Text(label, style = MaterialTheme.typography.labelLarge)
+                            Text(label, style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.focusScale())
                         }
                     } else {
                         OutlinedButton(
                             onClick = { viewModel.setThemeMode(mode) },
                             modifier = Modifier.fillMaxWidth().height(42.dp)
                         ) {
-                            Text(label, style = MaterialTheme.typography.labelLarge)
+                            Text(label, style = MaterialTheme.typography.labelLarge,
+                                modifier = Modifier.focusScale())
                         }
                     }
                 }
@@ -363,26 +367,27 @@ private fun ThemeSettings(
     }
 }
 
-/** Material3 标准全圆角按钮样式的设置项：限宽居中，缩放后也不会超出圆屏或与相邻项重叠 */
+/** Material3 标准全圆角按钮样式的设置项：宽度撑满屏幕、高度固定，只有内容做聚焦缩放，间隔恒定 */
 @Composable
 private fun SettingButton(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         Button(
             onClick = onClick,
             modifier = Modifier
-                .widthIn(max = 230.dp)
-                .height(44.dp),
+                .fillMaxWidth()
+                .height(52.dp),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
         ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))
+            Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp).focusScale())
             Spacer(Modifier.width(8.dp))
             Column(Modifier.weight(1f)) {
-                Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1,
+                    modifier = Modifier.focusScale())
                 Text(subtitle, style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f), maxLines = 1)
             }
             Icon(Icons.Filled.ChevronRight, contentDescription = null,
-                modifier = Modifier.size(15.dp))
+                modifier = Modifier.size(15.dp).focusScale())
         }
     }
 }
