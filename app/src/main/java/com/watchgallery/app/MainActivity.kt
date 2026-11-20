@@ -11,6 +11,9 @@ import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,7 +23,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -236,8 +242,8 @@ private fun AppNavigation(
     snackbarHostState: SnackbarHostState,
     onCrownPrefsChanged: () -> Unit
 ) {
-    // 导航栈：栈底是 Gallery， push 进入子页，pop 返回。
-    // SwipeBackContainer 在右划时把「下一层（返回目标）」渲染在底下，形成交互式返回观感。
+    // 导航栈：栈底 Gallery，push 进入 Viewer/Editor/Update，pop 返回。
+    // 设置不再是栈中一页，而是常驻抽屉（SettingsDrawer），盖在主界面之上，用垂直手势升降。
     val backStack = remember { mutableStateListOf<Screen>(Screen.Gallery) }
     var currentPhoto by remember { mutableStateOf<Photo?>(null) }
     val photos by viewModel.allPhotosFlow.collectAsState()
@@ -250,20 +256,37 @@ private fun AppNavigation(
     }
     val crownEvents = viewModel.crownEvents
 
+    // ── 设置抽屉状态 ──
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val collapsedY = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val drawerOffset = remember { Animatable(collapsedY) }   // 初始收起（藏在屏幕下方）
+    var settingsOpen by remember { mutableStateOf(false) }
+    var settingsAtRoot by remember { mutableStateOf(true) }  // 设置是否在一级菜单
+
     fun navigate(to: Screen) { backStack.add(to) }
     fun goBack() { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) }
+
+    fun openSettings() {
+        settingsOpen = true
+        scope.launch { drawerOffset.animateTo(0f, tween(300, easing = FastOutSlowInEasing)) }
+    }
+
+    fun closeSettings() {
+        settingsOpen = false
+        settingsAtRoot = true
+        scope.launch { drawerOffset.animateTo(collapsedY, tween(280, easing = FastOutSlowInEasing)) }
+    }
 
     val current = backStack.last()
     val below = if (backStack.size >= 2) backStack[backStack.size - 2] else null
 
     // 渲染某一层界面。
-    // - 每层都垫一层不透明纯黑背景：圆屏上右划露出下层时不会被上一层的内容透视叠加；
-    //   更重要的是避免缩放列表条目 alpha 淡出后透出下层画面（截图里设置页透出相册的根因）。
-    // - 底层（interactive=false）传空表冠流：否则上下两层同时 collect crownEvents，
-    //   转一次表冠会同时滚动两个列表。底层只做静态视觉呈现，也不接收点击。
+    // - 每层垫不透明纯黑背景：右划露出下层时不被透视叠加，缩放条目淡出也不透出下层画面。
+    // - 底层（interactive=false）传空表冠流：避免上下两层同时滚。
     @Composable
     fun ScreenLayer(screen: Screen, interactive: Boolean) {
-        val layerCrown = if (interactive) crownEvents else emptyFlow()
+        val layerCrown = if (interactive && !settingsOpen) crownEvents else emptyFlow()
         Box(Modifier.fillMaxSize().background(Color.Black)) {
             when (screen) {
                 is Screen.Gallery -> GalleryScreen(
@@ -273,7 +296,7 @@ private fun AppNavigation(
                     onPhotoClick = { photo ->
                         if (interactive) { currentPhoto = photo; navigate(Screen.Viewer) }
                     },
-                    onOpenSettings = { if (interactive) navigate(Screen.Settings) },
+                    onOpenSettings = { if (interactive) openSettings() },
                     onCheckUpdate = { if (interactive) navigate(Screen.Update) }
                 )
                 is Screen.Viewer -> {
@@ -297,14 +320,6 @@ private fun AppNavigation(
                         onBack = { if (interactive) goBack() }
                     )
                 }
-                is Screen.Settings -> SettingsScreen(
-                    viewModel = viewModel,
-                    isRound = isRound,
-                    crownEvents = layerCrown,
-                    onBack = { if (interactive) goBack() },
-                    onCrownPrefsChanged = onCrownPrefsChanged,
-                    onCheckUpdate = { if (interactive) navigate(Screen.Update) }
-                )
                 is Screen.Update -> UpdateScreen(
                     viewModel = viewModel,
                     isRound = isRound,
@@ -316,8 +331,8 @@ private fun AppNavigation(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
+        // 主导航层（Gallery / Viewer / Editor / Update）
         if (below != null) {
-            // 有下一层：当前页覆盖在返回目标之上，右划时露出下层
             SwipeBackContainer(
                 onBack = { goBack() },
                 backContent = { ScreenLayer(below, interactive = false) },
@@ -326,6 +341,29 @@ private fun AppNavigation(
         } else {
             ScreenLayer(current, interactive = true)
         }
+
+        // 设置抽屉：常驻，盖在主导航层之上
+        SettingsDrawer(
+            drawerOffset = drawerOffset,
+            collapsedY = collapsedY,
+            canDragDown = settingsAtRoot,
+            enabled = !settingsOpen && current is Screen.Gallery,
+            onOpened = { settingsOpen = true },
+            onClosed = { settingsOpen = false }
+        ) {
+            Box(Modifier.fillMaxSize().background(Color.Black)) {
+                SettingsScreen(
+                    viewModel = viewModel,
+                    isRound = isRound,
+                    crownEvents = if (settingsOpen) crownEvents else emptyFlow(),
+                    onBack = {},
+                    onCrownPrefsChanged = onCrownPrefsChanged,
+                    onCheckUpdate = { closeSettings(); navigate(Screen.Update) },
+                    onSubPageChanged = { settingsAtRoot = it }
+                )
+            }
+        }
+
         SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
     }
 }
@@ -334,6 +372,5 @@ private sealed class Screen {
     data object Gallery : Screen()
     data object Viewer : Screen()
     data object Editor : Screen()
-    data object Settings : Screen()
     data object Update : Screen()
 }

@@ -9,13 +9,9 @@ import android.os.Build
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -23,7 +19,6 @@ import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.material.icons.Icons
@@ -32,11 +27,8 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.PointerEventPass
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -56,8 +48,6 @@ import coil.compose.rememberAsyncImagePainter
 import com.watchgallery.app.data.Photo
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.launch
-import kotlin.math.abs
 
 private fun mediaPermission(): String =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
@@ -166,79 +156,6 @@ fun GalleryScreen(
             )
         }
 
-        // 底部上滑打开设置：透明手势区覆盖底部一条带，白色半透明引导线提示上滑。
-        SwipeUpToSettings(
-            modifier = Modifier.align(Alignment.BottomCenter),
-            onOpenSettings = onOpenSettings
-        )
-    }
-}
-
-/**
- * 底部上滑手势区 + 引导线。
- * 手指从屏幕底部附近向上滑超过阈值即打开设置页；引导线是一条白色半透明短线。
- */
-@Composable
-private fun SwipeUpToSettings(
-    modifier: Modifier = Modifier,
-    onOpenSettings: () -> Unit
-) {
-    val scope = rememberCoroutineScope()
-    val lift = remember { Animatable(0f) }   // 跟手反馈：0..1 的滑动进度
-    val density = LocalDensity.current
-    val slopPx = with(density) { 6.dp.toPx() }
-    val triggerPx = with(density) { 36.dp.toPx() }
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(42.dp)
-            .pointerInput(onOpenSettings) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    var totalDy = 0f
-                    var decided = false
-                    var abandoned = false
-                    while (true) {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        if (event.changes.all { !it.pressed }) break
-                        val change = event.changes.first()
-                        val dy = change.position.y - change.previousPosition.y
-                        totalDy += dy
-                        if (!decided && !abandoned) {
-                            if (abs(totalDy) > slopPx) {
-                                if (totalDy < 0f) decided = true else abandoned = true
-                            }
-                        }
-                        if (decided) {
-                            change.consume()
-                            val p = (-totalDy / triggerPx).coerceIn(0f, 1f)
-                            scope.launch { lift.snapTo(p) }
-                        } else if (abandoned) {
-                            break
-                        }
-                    }
-                    if (decided && -totalDy >= triggerPx) {
-                        onOpenSettings()
-                    }
-                    scope.launch { lift.animateTo(0f, tween(160)) }
-                }
-            },
-        contentAlignment = Alignment.BottomCenter
-    ) {
-        // 白色半透明引导线，跟手时略微上移、变亮
-        Box(
-            Modifier
-                .padding(bottom = 12.dp)
-                .width(44.dp)
-                .height(3.dp)
-                .clip(CircleShape)
-                .graphicsLayer {
-                    translationY = -lift.value * 6f
-                    alpha = 0.32f + 0.5f * lift.value
-                }
-                .background(Color.White)
-        )
     }
 }
 

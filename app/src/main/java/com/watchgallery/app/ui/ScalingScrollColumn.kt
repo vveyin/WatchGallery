@@ -35,8 +35,8 @@ private val LocalScalingState = compositionLocalOf<LazyListState?> { null }
 @Composable
 fun ScalingScrollColumn(
     crownEvents: Flow<Float>,
-    contentPadding: PaddingValues = PaddingValues(vertical = 84.dp),
-    verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(6.dp),
+    contentPadding: PaddingValues = PaddingValues(horizontal = 30.dp, vertical = 84.dp),
+    verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(12.dp),
     content: LazyListScope.() -> Unit
 ) {
     val listState = rememberLazyListState()
@@ -96,10 +96,10 @@ fun Modifier.scalingItem(key: String): Modifier {
                 val radius = viewportCenter * 0.9f
                 val t = (distance / radius).coerceIn(0f, 1f)
                 val eased = t * t
-                val sc = 1.28f - 0.70f * eased   // 正中 1.28 → 边缘 0.58
+                val sc = 1.14f - 0.48f * eased   // 正中 1.14 → 边缘 0.66（幅度收敛，避免放大后超出圆屏/相邻重叠）
                 scaleX = sc
                 scaleY = sc
-                alpha = 1f - 0.62f * t          // 正中清晰 → 边缘淡出
+                alpha = 1f - 0.55f * t          // 正中清晰 → 边缘淡出
             }
         }
 }

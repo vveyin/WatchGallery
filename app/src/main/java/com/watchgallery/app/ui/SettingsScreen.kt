@@ -6,6 +6,7 @@ import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
@@ -23,6 +24,7 @@ import com.watchgallery.app.data.CrownPrefs
 import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.CrashLogger
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
 
 /**
  * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有居中放大 + 表冠滚动）。
@@ -35,26 +37,53 @@ fun SettingsScreen(
     crownEvents: Flow<Float>,
     onBack: () -> Unit,
     onCrownPrefsChanged: () -> Unit,
-    onCheckUpdate: () -> Unit = {}
+    onCheckUpdate: () -> Unit = {},
+    onSubPageChanged: (Boolean) -> Unit = {}
 ) {
     var subPage by remember { mutableStateOf<SubPage>(SubPage.Main) }
+    LaunchedEffect(subPage) { onSubPageChanged(subPage == SubPage.Main) }
 
-    when (subPage) {
-        SubPage.Main -> SettingsMain(
-            viewModel = viewModel,
-            crownEvents = crownEvents,
-            onOpenCrown = { subPage = SubPage.Crown },
-            onOpenTheme = { subPage = SubPage.Theme },
-            onOpenDiag = { subPage = SubPage.Diag },
-            onCheckUpdate = onCheckUpdate
-        )
-        SubPage.Crown -> CrownSettings(
-            viewModel = viewModel,
-            crownEvents = crownEvents,
-            onPrefsChanged = onCrownPrefsChanged
-        )
-        SubPage.Theme -> ThemeSettings(viewModel = viewModel, crownEvents = crownEvents)
-        SubPage.Diag -> ScanDiagSettings(viewModel = viewModel, crownEvents = crownEvents)
+    // 主页直接显示；二级菜单用返回容器包裹，右划回到一级菜单（一级菜单的下滑收抽屉由外层把手处理）。
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        when (subPage) {
+            SubPage.Main -> SettingsMain(
+                viewModel = viewModel,
+                crownEvents = crownEvents,
+                onOpenCrown = { subPage = SubPage.Crown },
+                onOpenTheme = { subPage = SubPage.Theme },
+                onOpenDiag = { subPage = SubPage.Diag },
+                onCheckUpdate = onCheckUpdate
+            )
+            else -> SwipeBackContainer(
+                onBack = { subPage = SubPage.Main },
+                backContent = {
+                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                        SettingsMain(
+                            viewModel = viewModel,
+                            crownEvents = emptyFlow(),
+                            onOpenCrown = {},
+                            onOpenTheme = {},
+                            onOpenDiag = {},
+                            onCheckUpdate = {}
+                        )
+                    }
+                },
+                content = {
+                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                        when (subPage) {
+                            SubPage.Crown -> CrownSettings(
+                                viewModel = viewModel,
+                                crownEvents = crownEvents,
+                                onPrefsChanged = onCrownPrefsChanged
+                            )
+                            SubPage.Theme -> ThemeSettings(viewModel = viewModel, crownEvents = crownEvents)
+                            SubPage.Diag -> ScanDiagSettings(viewModel = viewModel, crownEvents = crownEvents)
+                            SubPage.Main -> {}
+                        }
+                    }
+                }
+            )
+        }
     }
 }
 
@@ -334,23 +363,27 @@ private fun ThemeSettings(
     }
 }
 
-/** Material3 标准全圆角按钮样式的设置项 */
+/** Material3 标准全圆角按钮样式的设置项：限宽居中，缩放后也不会超出圆屏或与相邻项重叠 */
 @Composable
 private fun SettingButton(icon: ImageVector, title: String, subtitle: String, onClick: () -> Unit) {
-    Button(
-        onClick = onClick,
-        modifier = Modifier.fillMaxWidth().height(46.dp),
-        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 0.dp)
-    ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp))
-        Spacer(Modifier.width(10.dp))
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1)
-            Text(subtitle, style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f), maxLines = 1)
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Button(
+            onClick = onClick,
+            modifier = Modifier
+                .widthIn(max = 230.dp)
+                .height(44.dp),
+            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                Text(subtitle, style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f), maxLines = 1)
+            }
+            Icon(Icons.Filled.ChevronRight, contentDescription = null,
+                modifier = Modifier.size(15.dp))
         }
-        Icon(Icons.Filled.ChevronRight, contentDescription = null,
-            modifier = Modifier.size(16.dp))
     }
 }
 
