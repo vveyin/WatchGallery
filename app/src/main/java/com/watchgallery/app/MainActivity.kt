@@ -261,40 +261,52 @@ private fun AppNavigation(
             )
             is Screen.Viewer -> {
                 val idx = photos.indexOfFirst { it.uri == currentPhoto?.uri }.coerceAtLeast(0)
-                PhotoViewerScreen(
-                    photos = photos,
-                    initialIndex = idx,
-                    isRound = isRound,
-                    crownEvents = crownEvents,
-                    onBack = { screen = Screen.Gallery },
-                    onEdit = { photo ->
-                        currentPhoto = photo
-                        screen = Screen.Editor
-                    }
-                )
-            }
-            is Screen.Editor -> {
-                currentPhoto?.let { photo ->
-                    EditScreen(
-                        photo = photo,
-                        viewModel = viewModel,
+                Box(Modifier.fillMaxSize().swipeToGoBack { screen = Screen.Gallery }) {
+                    PhotoViewerScreen(
+                        photos = photos,
+                        initialIndex = idx,
                         isRound = isRound,
-                        onBack = { screen = Screen.Viewer }
+                        crownEvents = crownEvents,
+                        onBack = { screen = Screen.Gallery },
+                        onEdit = { photo ->
+                            currentPhoto = photo
+                            screen = Screen.Editor
+                        }
                     )
                 }
             }
-            is Screen.Settings -> SettingsScreen(
-                viewModel = viewModel,
-                isRound = isRound,
-                crownEvents = crownEvents,
-                onBack = { screen = Screen.Gallery },
-                onCrownPrefsChanged = onCrownPrefsChanged
-            )
-            is Screen.Update -> UpdateScreen(
-                viewModel = viewModel,
-                isRound = isRound,
-                onBack = { screen = Screen.Gallery }
-            )
+            is Screen.Editor -> {
+                currentPhoto?.let { photo ->
+                    Box(Modifier.fillMaxSize().swipeToGoBack { screen = Screen.Viewer }) {
+                        EditScreen(
+                            photo = photo,
+                            viewModel = viewModel,
+                            isRound = isRound,
+                            onBack = { screen = Screen.Viewer }
+                        )
+                    }
+                }
+            }
+            is Screen.Settings -> Box(
+                Modifier.fillMaxSize().swipeToGoBack { screen = Screen.Gallery }
+            ) {
+                SettingsScreen(
+                    viewModel = viewModel,
+                    isRound = isRound,
+                    crownEvents = crownEvents,
+                    onBack = { screen = Screen.Gallery },
+                    onCrownPrefsChanged = onCrownPrefsChanged
+                )
+            }
+            is Screen.Update -> Box(
+                Modifier.fillMaxSize().swipeToGoBack { screen = Screen.Gallery }
+            ) {
+                UpdateScreen(
+                    viewModel = viewModel,
+                    isRound = isRound,
+                    onBack = { screen = Screen.Gallery }
+                )
+            }
         }
         SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
     }
