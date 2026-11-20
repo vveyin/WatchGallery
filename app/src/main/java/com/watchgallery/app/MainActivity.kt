@@ -260,7 +260,7 @@ private fun AppNavigation(
                 onCheckUpdate = { screen = Screen.Update }
             )
             is Screen.Viewer -> {
-                val idx = photos.indexOfFirst { it.id == currentPhoto?.id }.coerceAtLeast(0)
+                val idx = photos.indexOfFirst { it.uri == currentPhoto?.uri }.coerceAtLeast(0)
                 PhotoViewerScreen(
                     photos = photos,
                     initialIndex = idx,
