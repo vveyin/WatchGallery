@@ -11,8 +11,8 @@ android {
         applicationId = "com.watchgallery.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 10
-        versionName = "0.10"
+        versionCode = 11
+        versionName = "0.11"
         vectorDrawables { useSupportLibrary = true }
 
         // 检查更新用的仓库地址：Gitee 优先（国内直连快），GitHub 作为备用源

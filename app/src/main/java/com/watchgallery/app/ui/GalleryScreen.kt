@@ -245,24 +245,35 @@ private fun ScalingPhotoList(
                     }
                 }
             }
-            itemsIndexed(items, key = { _, p -> p.uri.toString() }) { index, photo ->
+            itemsIndexed(items, key = { _, p -> p.uri.toString() }) { _, photo ->
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(itemHeight)
                         .graphicsLayer {
-                            // 锚点固定为屏幕中心（恒定），每帧按"到中心的距离"算缩放，
-                            // 与可见项增删无关，滚动完全连续，不会突然从小变大。
+                            // 显式读取滚动 SnapshotState，强制 draw 阶段每帧重算缩放。
+                            // 否则 lambda 会停留在 item 首次进入可见区那一刻算出的值
+                            // （那时在边缘→小），滚到中间仍然是小的 → "中间比旁边小"。
+                            listState.firstVisibleItemIndex
+                            listState.firstVisibleItemScrollOffset
+
                             val info = listState.layoutInfo
                             val anchor = info.viewportSize.height / 2f
-                            val mine = info.visibleItemsInfo.firstOrNull { it.index == index }
-                            if (mine != null && anchor > 0f) {
-                                val center = mine.offset + mine.size / 2f
-                                val t = (kotlin.math.abs(center - anchor) / anchor).coerceIn(0f, 1f)
-                                val sc = 1.12f - 0.56f * t   // 中心 1.12（最大）→ 边缘 0.56
+                            // 用 uri 作 key 匹配，而不是 itemsIndexed 的 index：
+                            // 顶部"加载更多"footer 会占一个 index，导致 index 整体错位一项。
+                            val mine = info.visibleItemsInfo
+                                .firstOrNull { it.key == photo.uri.toString() }
+                            if (mine != null && mine.size > 0 && anchor > 0f) {
+                                val itemCenter = mine.offset + mine.size / 2f
+                                val distance = kotlin.math.abs(itemCenter - anchor)
+                                // 用 item 自身高度的 1.4 倍作衰减半径：相邻项就有明显大小差，
+                                // 中心项最大。二次缓动让中心区更饱满、边缘收敛更平滑。
+                                val t = (distance / (mine.size * 1.4f)).coerceIn(0f, 1f)
+                                val eased = t * t
+                                val sc = 1.28f - 0.73f * eased   // 中心 1.28 → 边缘 0.55
                                 scaleX = sc
                                 scaleY = sc
-                                alpha = 1f - 0.72f * t       // 中心 1.0 → 边缘 0.28
+                                alpha = 1f - 0.72f * t
                             }
                         }
                         .clickable { onPhotoClick(photo) }

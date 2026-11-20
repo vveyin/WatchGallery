@@ -58,16 +58,23 @@ fun Modifier.scalingItem(key: String): Modifier {
     val state = LocalScalingState.current
     if (state == null) return this
     return this.graphicsLayer {
+        // 显式读取滚动 SnapshotState，强制 draw 阶段每帧重算（否则缩放会停留在
+        // 条目首次进入可见区时的值，出现"中间小、两边大"）。
+        state.firstVisibleItemIndex
+        state.firstVisibleItemScrollOffset
+
         val info = state.layoutInfo
         val anchor = info.viewportSize.height / 2f
         val mine = info.visibleItemsInfo.firstOrNull { it.key == key }
-        if (mine != null && anchor > 0f) {
-            val center = mine.offset + mine.size / 2f
-            val t = (kotlin.math.abs(center - anchor) / anchor).coerceIn(0f, 1f)
-            val sc = 1.08f - 0.34f * t   // 中心 1.08 → 边缘 0.74
+        if (mine != null && mine.size > 0 && anchor > 0f) {
+            val itemCenter = mine.offset + mine.size / 2f
+            val distance = kotlin.math.abs(itemCenter - anchor)
+            val t = (distance / (mine.size * 1.4f)).coerceIn(0f, 1f)
+            val eased = t * t
+            val sc = 1.22f - 0.67f * eased   // 中心 1.22 → 边缘 0.55
             scaleX = sc
             scaleY = sc
-            alpha = 1f - 0.62f * t
+            alpha = 1f - 0.66f * t
         }
     }
 }

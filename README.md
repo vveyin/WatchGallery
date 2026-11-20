@@ -43,6 +43,11 @@
 - **手动导入**：空相册可直接用系统文件选择器导入照片，内容复制进应用私有目录，永远读得到
 - **扫描诊断页**：设置 → 扫描诊断，展示权限、媒体库行数、目录命中、异常信息
 
+### 缩放"中间小、两边大"修复（v0.11）
+- **根因一：缩放项错位**：列表顶部有一个"加载更多"footer 占了 index 0，`itemsIndexed` 给照片的 index 与 `visibleItemsInfo` 里的 index 整体错开一位；中心那张卡片实际拿到的是它上面那张的 offset 去算缩放，于是"中间小、旁边大"
+- **根因二：draw 不重算**：`graphicsLayer{}` 只读 `layoutInfo`，LazyColumn 滚动通常只移动布局位置、不 invalidate item 自身的 draw，缩放值停留在 item 首次进入可见区那一刻（那时在边缘→小），滚到中间仍是小的
+- **修复**：匹配改用照片 uri 作 key（不受 footer 占位影响）；draw lambda 中显式读取 `firstVisibleItemIndex`/`firstVisibleItemScrollOffset` 两个 SnapshotState 强制每帧重算；缩放曲线改为基于 item 自身高度归一化 + 二次缓动，中心 1.28x、相邻明显更大、边缘淡出，settings 列表同步修正
+
 ### 缩放列表与手势（v0.10）
 - **缩放方向修正**：中间卡片最大（1.12x）、越靠上下边缘越小并淡出；锚点固定为屏幕中心，按到中心的距离每帧计算，滚动连续，不再"从最小突然变最大"
 - **设置主页改为全屏缩放列表**：与主相册一致的 Wear OS 效果，条目中间大两边小，表冠可滚
