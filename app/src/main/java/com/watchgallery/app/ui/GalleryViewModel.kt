@@ -89,21 +89,16 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     val crownEvents: SharedFlow<Float> = _crownEvents
 
     /**
-     * 表冠增量投递：累积不足 1 格的小数增量，攒够 1 格再整体投递，剩余小数留到下次。
+     * 表冠增量投递：保留原始浮点增量，不做"攒够 1 格"的离散化。
      *
-     * 有些手表的旋转编码器每格上报的是 0.2~0.8 这种小于 1 的小数，若逐个投递，
-     * UI 层每次只滚几个像素、且小数像素在滚动中容易被丢弃，表现为「不平滑」。
-     * 累积到整格再投递，滚动距离守恒但每步稳定，手感平滑。
+     * 之前这里把小数攒够 1 格才发、发完连余数一起清零，等于把表冠增量量化成整格，
+     * 再被下游瞬间 scrollBy 一大段 —— 这正是"一格一格"顿挫的来源。
+     * 现在下游 [SmoothCrownScroll] 会自行对所有浮点增量求和并用阻尼逐帧逼近，
+     * 因此这里必须每个增量都原样投递（包括 0.2~0.8 的小数），距离才守恒、才连贯。
      */
-    private var crownCarry = 0f
-
     fun pushCrown(delta: Float) {
         if (delta == 0f || !delta.isFinite()) return
-        crownCarry += delta
-        if (kotlin.math.abs(crownCarry) >= 1f) {
-            _crownEvents.tryEmit(crownCarry)
-            crownCarry = 0f
-        }
+        _crownEvents.tryEmit(delta)
     }
 
     /** 表冠诊断：最近一次收到的原始运动事件，设置页实时显示，帮用户判断哪种模式有效 */

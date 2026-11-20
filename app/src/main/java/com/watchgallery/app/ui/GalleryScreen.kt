@@ -177,10 +177,9 @@ private fun ScalingPhotoList(
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
 
-    LaunchedEffect(crownEvents) {
-        crownEvents.collect { delta ->
-            gridState.scroll { scrollBy(-delta * 9f) }
-        }
+    // 表冠平滑滚动：离散事件累加成目标位移后逐帧逼近，避免一格一格的顿挫
+    SmoothCrownScroll(crownEvents) { step ->
+        gridState.scroll { scrollBy(step) }
     }
 
     // 滑到倒数一排时预加载下一批

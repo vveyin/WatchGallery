@@ -272,10 +272,9 @@ private fun fmtMb(bytes: Long): String {
 @Composable
 private fun rememberCrownScrollState(crownEvents: Flow<Float>): ScrollState {
     val state = rememberScrollState()
-    LaunchedEffect(crownEvents) {
-        crownEvents.collect { delta ->
-            state.scrollBy(-delta * 8f)
-        }
+    // 表冠平滑滚动：离散事件累加成目标位移后逐帧逼近，避免一格一格的顿挫
+    SmoothCrownScroll(crownEvents) { step ->
+        state.scrollBy(step)
     }
     return state
 }

@@ -41,10 +41,9 @@ fun ScalingScrollColumn(
 ) {
     val listState = rememberLazyListState()
 
-    LaunchedEffect(crownEvents) {
-        crownEvents.collect { delta ->
-            listState.scroll { scrollBy(-delta * 9f) }
-        }
+    // 表冠平滑滚动：离散事件累加成目标位移后逐帧逼近，避免一格一格的顿挫
+    SmoothCrownScroll(crownEvents) { step ->
+        listState.scroll { scrollBy(step) }
     }
 
     CompositionLocalProvider(LocalScalingState provides listState) {
