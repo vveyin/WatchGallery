@@ -464,7 +464,6 @@ private fun AppNavigation(
                 crownEvents = if (settingsOpen) crownEvents else emptyFlow(),
                 onBack = {},
                 onCrownPrefsChanged = onCrownPrefsChanged,
-                onCheckUpdate = { closeSettings(); navigate(Screen.Update) },
                 onSubPageChanged = { settingsAtRoot = it }
             )
         }

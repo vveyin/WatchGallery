@@ -3,28 +3,29 @@ package com.watchgallery.app.ui
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.scaleIn
-import androidx.compose.animation.slideInHorizontally
-import androidx.compose.animation.slideOutHorizontally
-import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
-import android.os.Build
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.LabelOff
@@ -33,32 +34,47 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.watchgallery.app.BuildConfig
+import com.watchgallery.app.R
 import com.watchgallery.app.data.CrownMode
 import com.watchgallery.app.data.CrownPrefs
 import com.watchgallery.app.data.ScreenShape
 import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.CrashLogger
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /**
- * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有居中放大 + 表冠滚动）。
- * 居中项放大到 1.14 倍、上下边缘缩到 0.78 并淡出；滚动只改变大小/透明度，不改颜色，
+ * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有表冠滚动）。
+ * 居中项适度放大、上下边缘缩小并淡出；滚动只改变大小/透明度，不改颜色，
  * 因此不会被误认为「当前选中」；只有手指按下时才有底色高亮和轻微回缩。
+ *
+ * 一级菜单按板块分组：手表适配 / 显示设置 / 其他功能 / 检测更新 / 关于。
+ * 二级页（含检测更新、关于）都在设置抽屉内渲染，因此自动带上抽屉那层毛玻璃背景。
+ *
+ * 二级页右划返回**跟手**：从屏幕左缘按下往右拖，当前页实时跟着手指移动、
+ * 一级菜单在后面从 0.90 倍放大回正 —— 与查看大图的右划返回完全同一套参数。
  */
 @Composable
 fun SettingsScreen(
@@ -67,7 +83,6 @@ fun SettingsScreen(
     crownEvents: Flow<Float>,
     onBack: () -> Unit,
     onCrownPrefsChanged: () -> Unit,
-    onCheckUpdate: () -> Unit = {},
     onSubPageChanged: (Boolean) -> Unit = {}
 ) {
     var subPage by remember { mutableStateOf<SubPage>(SubPage.Main) }
@@ -75,69 +90,133 @@ fun SettingsScreen(
     // 一级菜单的滚动位置放在这一层：进二级页再回来时还停在原来的位置
     val mainListState = rememberLazyListState()
 
-    // 一级 ↔ 二级转场。
-    // 进二级：新页从右侧滑入、旧页稍向左让位并淡出。
-    // 返回：**和大图页的退出动画完全一致** —— 当前页整屏向右滑出并淡成半透明，
-    //      下层从 0.90 倍缩放回正、同时淡入（对应 SwipeBackContainer 的那套参数）。
-    // 背景保持透明：底下是 SettingsDrawer 画的毛玻璃背板。
-    AnimatedContent(
-        targetState = subPage,
-        transitionSpec = {
-            val forward = targetState != SubPage.Main
-            if (forward) {
-                val enter = slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { it } +
-                        fadeIn(tween(190))
-                val exit = slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { -it / 3 } +
-                        fadeOut(tween(150))
-                enter togetherWith exit
-            } else {
-                val enter = scaleIn(
-                    animationSpec = tween(240, easing = FastOutSlowInEasing),
-                    initialScale = 0.90f
-                ) + fadeIn(tween(240)) +
-                        slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { -it / 20 }
-                val exit = slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { it } +
-                        fadeOut(tween(240))
-                enter togetherWith exit
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val offsetX = remember { Animatable(0f) }
+
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val widthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
+
+        // 打开二级页：从右侧滑入（一级菜单同步从后面退开）
+        LaunchedEffect(subPage) {
+            if (subPage != SubPage.Main) {
+                offsetX.snapTo(widthPx)
+                offsetX.animateTo(0f, tween(260, easing = FastOutSlowInEasing))
             }
-        },
-        label = "settingsPage"
-    ) { page ->
-        when (page) {
-            SubPage.Main -> SettingsMain(
+        }
+
+        // ── 底层：一级菜单 ──
+        // 始终参与组合（二级页打开时不可见），这样返回时列表位置、开关状态都还在。
+        // 透明度跟随返回手势：二级页完全打开时它是 0，拖动时随进度浮现。
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    val progress = (offsetX.value / widthPx).coerceIn(0f, 1f)
+                    val eased = 1f - (1f - progress) * (1f - progress)
+                    val s = 0.90f + 0.10f * eased
+                    scaleX = s
+                    scaleY = s
+                    translationX = -widthPx * 0.05f * (1f - eased)
+                    alpha = if (subPage == SubPage.Main) 1f else progress
+                }
+        ) {
+            SettingsMain(
                 viewModel = viewModel,
                 listState = mainListState,
-                crownEvents = if (page == subPage) crownEvents else emptyFlow(),
+                crownEvents = if (subPage == SubPage.Main) crownEvents else emptyFlow(),
                 onOpenCrown = { subPage = SubPage.Crown },
                 onOpenTheme = { subPage = SubPage.Theme },
                 onOpenDiag = { subPage = SubPage.Diag },
                 onOpenHidden = { subPage = SubPage.Hidden },
-                onCheckUpdate = onCheckUpdate
+                onOpenUpdate = { subPage = SubPage.Update },
+                onOpenAbout = { subPage = SubPage.About }
             )
-            else -> Box(
+        }
+
+        // ── 顶层：二级页 ──
+        if (subPage != SubPage.Main) {
+            Box(
                 Modifier
                     .fillMaxSize()
-                    // 圆屏左缘右划返回一级菜单（替代整页跟手容器，避免和转场动画打架）
-                    .edgeBackSwipe { subPage = SubPage.Main }
+                    .graphicsLayer {
+                        translationX = offsetX.value
+                        val progress = (offsetX.value / widthPx).coerceIn(0f, 1f)
+                        alpha = 1f - 0.38f * progress
+                    }
+                    .pointerInput(subPage) {
+                        val edge = 26.dp.toPx()
+                        val slop = 8.dp.toPx()
+                        val threshold = 72.dp.toPx()
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            if (down.position.x > edge) return@awaitEachGesture
+                            // 不在这里 consume：边缘 26dp 也可能压在按钮上，先让按钮照常响应，
+                            // 等真的判定成「横向右划」再逐帧消费，按钮的点击自然被取消。
+                            var totalDx = 0f
+                            var totalDy = 0f
+                            var decided = false
+                            var abandoned = false
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                if (event.changes.all { !it.pressed }) break
+                                val change = event.changes.first()
+                                totalDx += change.position.x - change.previousPosition.x
+                                totalDy += change.position.y - change.previousPosition.y
+                                if (!decided && !abandoned) {
+                                    if (abs(totalDx) > slop || abs(totalDy) > slop) {
+                                        if (totalDx > 0f && abs(totalDx) > abs(totalDy) * 1.2f) {
+                                            decided = true
+                                        } else {
+                                            abandoned = true
+                                        }
+                                    }
+                                }
+                                if (decided) {
+                                    change.consume()
+                                    // 手势回调处在受限挂起作用域里，Animatable 只能投递到普通协程执行
+                                    scope.launch { offsetX.snapTo(totalDx.coerceAtLeast(0f)) }
+                                } else if (abandoned) {
+                                    break
+                                }
+                            }
+                            if (decided && totalDx > threshold) {
+                                // 先跟手滑完整屏，再切回一级菜单，不会「划过去突然消失」
+                                scope.launch {
+                                    offsetX.animateTo(widthPx, tween(170, easing = FastOutSlowInEasing))
+                                    subPage = SubPage.Main
+                                }
+                            } else if (decided) {
+                                scope.launch {
+                                    offsetX.animateTo(0f, tween(200, easing = FastOutSlowInEasing))
+                                }
+                            }
+                        }
+                    }
             ) {
-                when (page) {
+                when (subPage) {
                     SubPage.Crown -> CrownSettings(
                         viewModel = viewModel,
-                        crownEvents = if (page == subPage) crownEvents else emptyFlow(),
+                        crownEvents = crownEvents,
                         onPrefsChanged = onCrownPrefsChanged
                     )
                     SubPage.Theme -> ThemeSettings(
                         viewModel = viewModel,
-                        crownEvents = if (page == subPage) crownEvents else emptyFlow()
+                        crownEvents = crownEvents
                     )
                     SubPage.Diag -> ScanDiagSettings(
                         viewModel = viewModel,
-                        crownEvents = if (page == subPage) crownEvents else emptyFlow()
+                        crownEvents = crownEvents
                     )
                     SubPage.Hidden -> HiddenFoldersSettings(
                         viewModel = viewModel,
-                        crownEvents = if (page == subPage) crownEvents else emptyFlow()
+                        crownEvents = crownEvents
                     )
+                    SubPage.Update -> UpdateContent(
+                        viewModel = viewModel,
+                        crownEvents = crownEvents
+                    )
+                    SubPage.About -> AboutPage(crownEvents = crownEvents)
                     SubPage.Main -> {}
                 }
             }
@@ -151,6 +230,8 @@ private sealed class SubPage {
     data object Theme : SubPage()
     data object Diag : SubPage()
     data object Hidden : SubPage()
+    data object Update : SubPage()
+    data object About : SubPage()
 }
 
 /** 设置主页 */
@@ -163,7 +244,8 @@ private fun SettingsMain(
     onOpenTheme: () -> Unit,
     onOpenDiag: () -> Unit,
     onOpenHidden: () -> Unit,
-    onCheckUpdate: () -> Unit
+    onOpenUpdate: () -> Unit,
+    onOpenAbout: () -> Unit
 ) {
     val themeMode by viewModel.themeMode.collectAsState()
     val crownMode by viewModel.crownMode.collectAsState()
@@ -174,14 +256,11 @@ private fun SettingsMain(
     val blurBackdrop by viewModel.blurBackdrop.collectAsState()
     val animateGifs by viewModel.animateGifs.collectAsState()
     val blockGestures by viewModel.blockGestures.collectAsState()
+    val screenShape by viewModel.screenShape.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
     val hiddenFolders by viewModel.hiddenFolders.collectAsState()
     val report by viewModel.scanReport.collectAsState()
     val context = LocalContext.current
-
-    val importLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris -> if (uris.isNotEmpty()) viewModel.importPhotos(uris) }
 
     ScalingScrollColumn(
         crownEvents = crownEvents,
@@ -189,12 +268,15 @@ private fun SettingsMain(
         listState = listState
     ) {
         item(key = "settings_title") {
-            Box(Modifier.fillMaxWidth().height(28.dp).settingItem("settings_title", scale = false),
+            Box(Modifier.fillMaxWidth().height(26.dp).settingItem("settings_title", scale = false),
                 contentAlignment = Alignment.Center) {
                 Text("设置", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
             }
         }
+
+        // ───────────────── 1. 手表适配 ─────────────────
+        item(key = "sec_watch") { SectionHeader("手表适配", "sec_watch") }
         item(key = "row_crown") {
             SettingButton(
                 icon = Icons.Filled.Cached,
@@ -202,6 +284,57 @@ private fun SettingsMain(
                 subtitle = "${crownMode.label} · ${formatSpeed(crownSpeed)}x",
                 onClick = onOpenCrown,
                 itemKey = "row_crown"
+            )
+        }
+        item(key = "row_shape") {
+            SettingButton(
+                icon = if (screenShape == ScreenShape.ROUND) Icons.Filled.Circle
+                else Icons.Filled.CropSquare,
+                title = "屏幕形状",
+                subtitle = when (screenShape) {
+                    ScreenShape.AUTO -> "自动 · 点击切换圆屏 / 方屏"
+                    ScreenShape.ROUND -> "圆屏 · 列表中间放大，避开弧边"
+                    ScreenShape.SQUARE -> "方屏 · 铺满整屏，不做居中放大"
+                },
+                onClick = { viewModel.setScreenShape(ScreenShape.next(screenShape)) },
+                itemKey = "row_shape"
+            )
+        }
+        item(key = "row_zoom") {
+            SettingButton(
+                icon = if (showZoomButtons) Icons.Filled.ZoomIn else Icons.Filled.ZoomOut,
+                title = "缩放按键",
+                subtitle = if (showZoomButtons) "开 · 查看大图时顶部显示放大/缩小"
+                else "关 · 只用双指或表冠缩放",
+                onClick = { viewModel.setShowZoomButtons(!showZoomButtons) },
+                itemKey = "row_zoom"
+            )
+        }
+        // `setSystemGestureExclusionRects` 是 Android 10（API 29）才有的 API，
+        // 低版本既没有这个能力、也没有「边缘返回」这类系统手势，所以整项都不显示。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            item(key = "row_gesture") {
+                SettingButton(
+                    icon = Icons.Filled.Block,
+                    title = "屏蔽系统手势",
+                    subtitle = if (blockGestures) "开 · 边缘滑动只交给应用处理"
+                    else "关 · 系统手势优先（左滑可能退出）",
+                    onClick = { viewModel.setBlockGestures(!blockGestures) },
+                    itemKey = "row_gesture"
+                )
+            }
+        }
+
+        // ───────────────── 2. 显示设置 ─────────────────
+        item(key = "sec_display") { SectionHeader("显示设置", "sec_display") }
+        item(key = "row_theme") {
+            SettingButton(
+                icon = if (themeMode == ThemeMode.LIGHT) Icons.Filled.LightMode
+                else Icons.Filled.DarkMode,
+                title = "主题设置",
+                subtitle = if (themeMode == ThemeMode.LIGHT) "白天" else "夜间",
+                onClick = onOpenTheme,
+                itemKey = "row_theme"
             )
         }
         item(key = "row_mode") {
@@ -242,16 +375,6 @@ private fun SettingsMain(
                 itemKey = "row_names"
             )
         }
-        item(key = "row_zoom") {
-            SettingButton(
-                icon = if (showZoomButtons) Icons.Filled.ZoomIn else Icons.Filled.ZoomOut,
-                title = "缩放按键",
-                subtitle = if (showZoomButtons) "开 · 查看大图时顶部显示放大/缩小"
-                else "关 · 只用双指或表冠缩放",
-                onClick = { viewModel.setShowZoomButtons(!showZoomButtons) },
-                itemKey = "row_zoom"
-            )
-        }
         item(key = "row_gif") {
             SettingButton(
                 icon = Icons.Filled.Gif,
@@ -260,21 +383,6 @@ private fun SettingsMain(
                 else "关 · 列表只显示首帧，点开仍是动图",
                 onClick = { viewModel.setAnimateGifs(!animateGifs) },
                 itemKey = "row_gif"
-            )
-        }
-        item(key = "row_shape") {
-            val shape by viewModel.screenShape.collectAsState()
-            SettingButton(
-                icon = if (shape == ScreenShape.ROUND) Icons.Filled.Circle
-                else Icons.Filled.CropSquare,
-                title = "屏幕形状",
-                subtitle = when (shape) {
-                    ScreenShape.AUTO -> "自动 · 点击切换圆屏 / 方屏"
-                    ScreenShape.ROUND -> "圆屏 · 列表中间放大，避开弧边"
-                    ScreenShape.SQUARE -> "方屏 · 铺满整屏，不做居中放大"
-                },
-                onClick = { viewModel.setScreenShape(ScreenShape.next(shape)) },
-                itemKey = "row_shape"
             )
         }
         item(key = "row_blur") {
@@ -287,38 +395,9 @@ private fun SettingsMain(
                 itemKey = "row_blur"
             )
         }
-        // ── 屏蔽系统手势 ──
-        // `setSystemGestureExclusionRects` 是 Android 10（API 29）才有的 API，
-        // 低版本既没有这个能力、也没有「边缘返回」这类系统手势，所以整项都不显示。
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            item(key = "row_gesture") {
-                SettingButton(
-                    icon = Icons.Filled.Block,
-                    title = "屏蔽系统手势",
-                    subtitle = if (blockGestures) "开 · 边缘滑动只交给应用处理"
-                    else "关 · 系统手势优先（左滑可能退出）",
-                    onClick = { viewModel.setBlockGestures(!blockGestures) },
-                    itemKey = "row_gesture"
-                )
-            }
-        }
-        item(key = "row_theme") {
-            SettingButton(
-                icon = when (themeMode) {
-                    ThemeMode.DARK -> Icons.Filled.DarkMode
-                    ThemeMode.LIGHT -> Icons.Filled.LightMode
-                    else -> Icons.Filled.BrightnessAuto
-                },
-                title = "主题",
-                subtitle = when (themeMode) {
-                    ThemeMode.DARK -> "夜间"
-                    ThemeMode.LIGHT -> "白天"
-                    else -> "跟随系统"
-                },
-                onClick = onOpenTheme,
-                itemKey = "row_theme"
-            )
-        }
+
+        // ───────────────── 3. 其他功能 ─────────────────
+        item(key = "sec_other") { SectionHeader("其他功能", "sec_other") }
         item(key = "row_diag") {
             SettingButton(
                 icon = Icons.Filled.Search,
@@ -326,15 +405,6 @@ private fun SettingsMain(
                 subtitle = "媒体库 ${report.imagesRows} · 目录 ${report.dirHits} · 导入 ${report.importedCount}",
                 onClick = onOpenDiag,
                 itemKey = "row_diag"
-            )
-        }
-        item(key = "row_import") {
-            SettingButton(
-                icon = Icons.Filled.AddPhotoAlternate,
-                title = "导入照片",
-                subtitle = "从文件选择器添加照片",
-                onClick = { runCatching { importLauncher.launch(arrayOf("image/*")) } },
-                itemKey = "row_import"
             )
         }
         item(key = "row_log") {
@@ -350,24 +420,61 @@ private fun SettingsMain(
                 itemKey = "row_log"
             )
         }
+
+        // ───────────────── 4. 检测更新 ─────────────────
+        item(key = "sec_update") { SectionHeader("检测更新", "sec_update") }
         item(key = "row_update") {
             SettingButton(
                 icon = Icons.Filled.SystemUpdate,
                 title = "检测更新",
                 subtitle = "检查并安装新版本",
-                onClick = onCheckUpdate,
+                onClick = onOpenUpdate,
                 itemKey = "row_update"
             )
         }
+
+        // ───────────────── 5. 关于 ─────────────────
+        item(key = "sec_about") { SectionHeader("关于", "sec_about") }
         item(key = "row_about") {
             SettingButton(
                 icon = Icons.Filled.Info,
                 title = "关于",
-                subtitle = "相册 v${com.watchgallery.app.BuildConfig.VERSION_NAME} · 圆屏手表版",
-                onClick = {},
+                subtitle = "相册 v${BuildConfig.VERSION_NAME} · 圆屏手表版",
+                onClick = onOpenAbout,
                 itemKey = "row_about"
             )
         }
+    }
+}
+
+/**
+ * 板块标题：左边小字（主色）+ 一条渐隐细线。
+ * 不参与居中放大（`scale = false`），只做边缘淡出，避免两行标题被挤成一团。
+ */
+@Composable
+private fun SectionHeader(title: String, key: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 7.dp, bottom = 1.dp)
+            .settingItem("hdr_$key", scale = false),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            title,
+            fontSize = 9.sp,
+            letterSpacing = 0.5.sp,
+            fontWeight = FontWeight.Medium,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.padding(start = 3.dp)
+        )
+        Spacer(Modifier.width(6.dp))
+        Box(
+            Modifier
+                .weight(1f)
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.22f))
+        )
     }
 }
 
@@ -472,7 +579,7 @@ private fun CrownSettings(
     }
 }
 
-/** 主题设置子页（缩放列表） */
+/** 主题设置子页：只有夜间 / 白天两档（默认夜间） */
 @Composable
 private fun ThemeSettings(
     viewModel: GalleryViewModel,
@@ -481,26 +588,38 @@ private fun ThemeSettings(
     val current by viewModel.themeMode.collectAsState()
     val options = listOf(
         ThemeMode.DARK to "夜间（黑底）",
-        ThemeMode.LIGHT to "白天（白纸）",
-        ThemeMode.SYSTEM to "跟随系统"
+        ThemeMode.LIGHT to "白天（白纸）"
     )
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "theme_title") {
             Box(Modifier.fillMaxWidth().height(28.dp).settingItem("theme_title", scale = false),
                 contentAlignment = Alignment.Center) {
-                Text("主题", style = MaterialTheme.typography.titleMedium,
+                Text("主题设置", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+        item(key = "theme_desc") {
+            Box(Modifier.fillMaxWidth().settingItem("theme_desc", scale = false)) {
+                Text(
+                    "夜间适合暗环境，白天在强光下更清楚。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
         options.forEach { (mode, label) ->
             item(key = "theme_${mode.name}") {
                 val mk = "theme_${mode.name}"
-                Box(Modifier.fillMaxWidth().height(52.dp), contentAlignment = Alignment.Center) {
+                val selected = if (mode == ThemeMode.LIGHT) current == ThemeMode.LIGHT
+                else current != ThemeMode.LIGHT
+                Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
                     OptionButton(
-                        selected = current == mode,
+                        selected = selected,
                         label = label,
                         onClick = { viewModel.setThemeMode(mode) },
-                        modifier = Modifier.fillMaxWidth().height(42.dp).settingItem(mk)
+                        modifier = Modifier.fillMaxWidth().height(44.dp).settingItem(mk)
                     )
                 }
             }
@@ -509,8 +628,156 @@ private fun ThemeSettings(
 }
 
 /**
+ * 关于页：图标在最上面居中，下面一行行文字。
+ *
+ * 圆屏两头是弧边，正文如果按「整屏居中」排，最下面几行会被切掉；所以内容块用
+ * `Arrangement.Center` 垂直居中，再在末尾塞两排空白 —— 等于把整块文字往上推一行半，
+ * 每一行都落在圆里能看见的位置。
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AboutPage(crownEvents: Flow<Float>) {
+    val context = LocalContext.current
+    val scroll = rememberScrollState()
+    var toast by remember { mutableStateOf<String?>(null) }
+    CrownScroll(crownEvents) { scroll.scrollBy(it) }
+
+    LaunchedEffect(toast) {
+        if (toast != null) {
+            delay(1500)
+            toast = null
+        }
+    }
+
+    val linkColor = Color(0xFF4FA3FF)
+
+    Box(Modifier.fillMaxSize()) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val minH = maxHeight
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(scroll)
+                    .heightIn(min = minH)
+                    .padding(horizontal = 16.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // 应用图标：自适应图标的前景 + 背景两层叠起来，和桌面上的图标一致
+                Box(
+                    Modifier
+                        .size(46.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                ) {
+                    Image(
+                        painter = painterResource(R.mipmap.ic_launcher_background),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                    Image(
+                        painter = painterResource(R.mipmap.ic_launcher_foreground),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+
+                Spacer(Modifier.height(5.dp))
+                Text(
+                    "相册",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Spacer(Modifier.height(1.dp))
+                Text(
+                    "手表本地相册 · 由春羽开发",
+                    fontSize = 9.sp,
+                    lineHeight = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+
+                Spacer(Modifier.height(6.dp))
+                AboutLine("应用版本", BuildConfig.VERSION_NAME)
+                AboutLine("Version Code", BuildConfig.VERSION_CODE.toString())
+                AboutLine("开发者名称", "春羽")
+
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "0o0社区@春羽",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+                Spacer(Modifier.height(2.dp))
+                // 网址：蓝字，点击用浏览器打开，长按复制并弹应用内提示
+                Text(
+                    "0o0.site",
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = linkColor,
+                    modifier = Modifier
+                        .combinedClickable(
+                            onClick = { openUrl(context, "https://0o0.site") },
+                            onLongClick = {
+                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                cm.setPrimaryClip(ClipData.newPlainText("0o0.site", "0o0.site"))
+                                toast = "已复制网址"
+                            }
+                        )
+                        .padding(horizontal = 10.dp, vertical = 3.dp)
+                )
+
+                // 末尾两排空白（每排 13dp）：把上面这整块文字往上顶，
+                // 让最后一行落在圆屏可见的位置，不被表盘下沿的弧边切掉
+                Spacer(Modifier.height(26.dp))
+            }
+        }
+
+        // 应用内 toast（不用系统 Toast：手表上系统 Toast 会被圆角裁掉）
+        InAppToast(
+            message = toast,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 46.dp)
+        )
+    }
+}
+
+@Composable
+private fun AboutLine(label: String, value: String) {
+    Row(
+        Modifier.padding(vertical = 1.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            label,
+            fontSize = 9.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.width(5.dp))
+        Text(
+            value,
+            fontSize = 10.sp,
+            color = MaterialTheme.colorScheme.onSurface
+        )
+    }
+}
+
+private fun openUrl(context: Context, url: String) {
+    runCatching {
+        context.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        )
+    }.onFailure {
+        Toast.makeText(context, "没有可用的浏览器", Toast.LENGTH_SHORT).show()
+    }
+}
+
+/**
  * Material3 标准全圆角按钮（Wear OS pill 风格）：满宽。
- * 由 [scalingItem] 做「只缩不放」形变 —— 居中正常大小（≈满屏宽），边缘缩小淡出。
+ * 由 [settingItem] 做「只缩不放」形变 —— 居中正常大小（≈满屏宽），边缘缩小淡出。
  * 底色用 surfaceVariant（淡灰），不再用 primary 紫蓝填充：设置条属于导航项，
  * 满屏紫色会抢走注意力，也很难和选中态区分。
  */
@@ -827,34 +1094,6 @@ private fun Modifier.settingItem(key: String, scale: Boolean = true): Modifier {
                 alpha = 1f - 0.40f * t
             }
         }
-}
-
-/**
- * 圆屏左缘右划返回：从屏幕左侧 26dp 内起手、横向位移超过 56dp 就触发。
- * 不做跟手位移 —— 转场动画由 [AnimatedContent] 统一负责，避免两套动画叠在一起。
- */
-private fun Modifier.edgeBackSwipe(onBack: () -> Unit): Modifier = pointerInput(onBack) {
-    val edge = 26.dp.toPx()
-    val threshold = 56.dp.toPx()
-    awaitEachGesture {
-        val down = awaitFirstDown(requireUnconsumed = false)
-        if (down.position.x > edge) return@awaitEachGesture
-        var dx = 0f
-        var dy = 0f
-        while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
-            if (event.changes.all { !it.pressed }) break
-            val c = event.changes.firstOrNull { it.id == down.id } ?: break
-            dx += c.position.x - c.previousPosition.x
-            dy += c.position.y - c.previousPosition.y
-            if (abs(dy) > abs(dx) * 1.4f && abs(dy) > threshold) break
-            if (dx > threshold) {
-                c.consume()
-                onBack()
-                break
-            }
-        }
-    }
 }
 
 /** 灵敏度显示：小于 1x 保留两位（0.15x），1x 以上保留一位（2.5x / 10.0x） */

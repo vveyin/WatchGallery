@@ -4,10 +4,12 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -43,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.watchgallery.app.BuildConfig
@@ -79,6 +82,26 @@ fun UpdateScreen(
     isRound: Boolean,
     crownEvents: Flow<Float> = kotlinx.coroutines.flow.emptyFlow(),
     onBack: () -> Unit
+) {
+    // 与设置抽屉同款毛玻璃背景：已经抓过底图就铺那张糊好的图，没有就露出底层纯黑。
+    // 设置里的「检测更新」是抽屉内的二级页，本来就带着这层背景；这里独立打开时补齐。
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val h = with(LocalDensity.current) { maxHeight.toPx() }
+        if (BlurBackdrop.image != null) {
+            BlurBand(heightPx = { h }, dim = 0.55f)
+        }
+        UpdateContent(viewModel = viewModel, crownEvents = crownEvents)
+    }
+}
+
+/**
+ * 检测更新的全部界面内容（不含背景与返回手势）。
+ * 独立页与设置抽屉里的二级页共用这一份，避免两处界面各写一遍。
+ */
+@Composable
+fun UpdateContent(
+    viewModel: GalleryViewModel,
+    crownEvents: Flow<Float>
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()

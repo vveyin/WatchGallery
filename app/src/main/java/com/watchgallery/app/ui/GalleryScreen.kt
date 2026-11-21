@@ -86,6 +86,9 @@ import kotlin.math.abs
  */
 private const val SELECT_DIRECTION_SLOP = 20f
 
+/** 分页预加载提前量：还剩这么多排就加载下一批 */
+private const val PRELOAD_ROWS = 5
+
 private fun mediaPermission(): String =
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU)
         Manifest.permission.READ_MEDIA_IMAGES
@@ -480,12 +483,19 @@ private fun ScalingPhotoList(
         gridState.scrollBy(step)
     }
 
-    // 滑到倒数一排时预加载下一批
-    val needMore by remember {
+    // 快滑到底就预加载下一批：屏幕底部那一排和当前最后一张照片之间还剩
+    // [PRELOAD_ROWS] 排的距离时就开始加载，不用等真的滚到最后一条。
+    //
+    // 这里必须把 items.size / hasMore / columns 当 remember 的 key：
+    // 旧写法是 remember { derivedStateOf { ... } }，lambda 在**首次组合**时就把
+    // items（空列表）和 hasMore（false）捕获死了 —— 之后列表怎么变，判断里用的
+    // 永远是「hasMore = false」，所以底部那行「继续下滑加载更多」一直挂着却从不加载。
+    val needMore by remember(items.size, hasMore, columns) {
         derivedStateOf {
-            val info = gridState.layoutInfo
-            val last = info.visibleItemsInfo.lastOrNull()?.index ?: 0
-            hasMore && last >= items.size - columns
+            if (!hasMore) return@derivedStateOf false
+            val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
+                ?: return@derivedStateOf false
+            last >= items.size - columns * PRELOAD_ROWS
         }
     }
     LaunchedEffect(needMore) {
