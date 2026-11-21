@@ -1,5 +1,6 @@
 package com.watchgallery.app.ui
 
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -55,6 +56,8 @@ fun WatchDialog(
     confirmEnabled: Boolean = true,
     onCancel: (() -> Unit)? = null,
     onConfirm: (() -> Unit)? = null,
+    /** 内容区滚动状态：需要表冠滚动时由调用方传进来，不传就自己建一个 */
+    scrollState: ScrollState? = null,
     body: @Composable ColumnScope.() -> Unit
 ) {
     Dialog(
@@ -70,6 +73,8 @@ fun WatchDialog(
         ) {
             // 内切圆内最大正方形（留一点余量，避免贴到弧边）
             val side = min(maxWidth, maxHeight) * 0.70f
+            val ownScroll = rememberScrollState()
+            val bodyScroll = scrollState ?: ownScroll
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surface,
@@ -88,7 +93,7 @@ fun WatchDialog(
                         modifier = Modifier
                             .weight(1f)
                             .fillMaxWidth()
-                            .verticalScroll(rememberScrollState()),
+                            .verticalScroll(bodyScroll),
                         content = body
                     )
                     if (cancelLabel != null || confirmLabel != null) {
@@ -171,7 +176,7 @@ fun WatchTextField(
     modifier: Modifier = Modifier,
     focusRequester: FocusRequester? = null,
     singleLine: Boolean = true,
-    onDone: () -> Unit = {}
+    onDone: (() -> Unit)? = null
 ) {
     BasicTextField(
         value = value,
@@ -180,8 +185,10 @@ fun WatchTextField(
         textStyle = MaterialTheme.typography.labelLarge.copy(
             color = MaterialTheme.colorScheme.onSurface
         ),
-        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-        keyboardActions = KeyboardActions(onDone = { onDone() }),
+        // ImeAction.None：输入法右下角那枚键**不再直接确认/提交**，
+        // 只负责换行（单行时什么都不做）。确认只走界面上的按钮，避免误触把半截内容提交掉。
+        keyboardOptions = KeyboardOptions(imeAction = ImeAction.None),
+        keyboardActions = KeyboardActions(onDone = { onDone?.invoke() }),
         modifier = modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))

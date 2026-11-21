@@ -17,6 +17,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -31,6 +32,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -65,6 +67,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
@@ -76,6 +79,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -93,12 +97,9 @@ import kotlin.math.roundToInt
 import kotlin.math.sqrt
 
 /**
- * 缩放上限（表冠与双指共用）。
- *
- * 长图（例如 1080×8000 的截图）按高度铺满后宽度只有几十像素，6 倍还不够看清文字，
- * 因此放到 8 倍；解码尺寸按档位跟着放大（见 [decodeSize]），倍数越清越细。
+ * 最高解码档位的长边像素。缩放上限按它算：解码只到这个尺寸，再放大只是把像素拉开。
  */
-private const val MAX_SCALE = 8f
+private const val TOP_TIER_LONG = 3600f
 
 /** 抽屉收起时，屏幕底部用于「上滑拉起抽屉」的把手区高度 */
 private val HandleZone = 38.dp
@@ -116,8 +117,9 @@ private const val PAGE_THRESHOLD = 0.16f
  *  - 单击**不再**弹图片名（名字固定在抽屉顶部），抽屉里是 编辑 / 详细信息 / 重命名；
  *  - 底部只留一条把手，上滑拉起抽屉（两态：不显示 / 全屏）。
  *
- * 清晰度：Coil 按「屏幕的 3 倍」请求解码，放大到 3 倍以内都是原始像素，
- * 而不是像以前那样按视图大小解码、一放大就是一堆被拉开的像素。
+ * 清晰度：Coil 按「原图长宽比 + 缩放档位」请求解码（长边 1400 / 2400 / 3600），
+ * 放大到 3 倍以内都是原始像素，而不是像以前那样按视图大小解码、一放大就是一堆被拉开的像素。
+ * 放大上限按屏幕像素现算（见 [maxZoomFor]），不再写死倍数。
  */
 @Composable
 fun PhotoViewerScreen(
@@ -164,9 +166,18 @@ fun PhotoViewerScreen(
     val context = LocalContext.current
     val view = LocalView.current
     val window = remember(view) { view.context.findHostActivity()?.window }
-    val screenH = with(density) { androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val cfg = androidx.compose.ui.platform.LocalConfiguration.current
+    val screenH = with(density) { cfg.screenHeightDp.dp.toPx() }
+    val screenWpxTop = with(density) { cfg.screenWidthDp.dp.roundToPx() }
+    val screenHpxTop = with(density) { cfg.screenHeightDp.dp.roundToPx() }
     val handlePx = with(density) { HandleZone.toPx() }
     val slopPx = with(density) { 6.dp.toPx() }
+
+    /**
+     * 当前这张图的放大上限：按屏幕像素算，不写死倍数。
+     * 每次调用现算，切图 / 换屏幕尺寸后自然跟着变。
+     */
+    fun zoomCap(): Float = maxZoomFor(photos.getOrNull(index), screenWpxTop, screenHpxTop)
 
     // ── 抽屉：0 = 收起，1 = 铺满（三处抽屉统一用 DrawerState）──
     val drawer = rememberDrawerState(false)
@@ -225,20 +236,22 @@ fun PhotoViewerScreen(
     }
     val tapRef = rememberUpdatedState<() -> Unit>({ handleTap() })
 
-    // 表冠缩放：逐条消费增量，避免累加值导致缩放失控
-    LaunchedEffect(crownEvents) {
-        crownEvents.collect { delta ->
-            val s = (scale + delta * 0.01f).coerceIn(1f, MAX_SCALE)
-            scale = s
-            if (s <= 1.0001f) offset = Offset.Zero
-        }
-    }
-
     // ── 详细信息 / 重命名 ──
     var showDetail by remember { mutableStateOf(false) }
     var renameTarget by remember { mutableStateOf<Photo?>(null) }
     var renameText by remember { mutableStateOf("") }
     var pendingRename by remember { mutableStateOf<Pair<Photo, String>?>(null) }
+
+    // 表冠缩放：逐条消费增量，避免累加值导致缩放失控。
+    // 弹窗打开时表冠归弹窗用（详细信息里滚列表），这里必须让位，否则同一串事件会被用两遍。
+    LaunchedEffect(crownEvents) {
+        crownEvents.collect { delta ->
+            if (showDetail || renameTarget != null) return@collect
+            val s = (scale + delta * 0.01f).coerceIn(1f, zoomCap())
+            scale = s
+            if (s <= 1.0001f) offset = Offset.Zero
+        }
+    }
 
     val writeLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -422,8 +435,23 @@ fun PhotoViewerScreen(
                                         scaleY = if (d == 0) scale else 1f
                                         translationX = if (d == 0) offset.x else 0f
                                         translationY = if (d == 0) offset.y else 0f
-                                        alpha = if (useThumb) bigAlpha
+                                        val base = if (useThumb) bigAlpha
                                         else if (basePainter != null && !loaded) 0f else 1f
+                                        // 入场：从「缩略图那种偏暗 + 半透明」平滑升到标准亮度，
+                                        // 不是一下子跳到全亮（那是原来黑一下 / 闪一下的来源）
+                                        alpha = if (d == 0) base * (0.35f + 0.65f * enter.value)
+                                        else base
+                                    }
+                                    // 亮度部分：整块压一层黑，透明度随入场进度降到 0。
+                                    // 在 draw 阶段读动画值，只失效绘制，不重组图片树。
+                                    .drawWithContent {
+                                        drawContent()
+                                        if (d == 0) {
+                                            val dim = (1f - enter.value) * 0.45f
+                                            if (dim > 0.002f) {
+                                                drawRect(Color.Black.copy(alpha = dim))
+                                            }
+                                        }
                                     }
                             )
                         }
@@ -463,7 +491,7 @@ fun PhotoViewerScreen(
 
                                     if (zoom != 1f) {
                                         everZoomed = true
-                                        val s = (scale * zoom).coerceIn(1f, MAX_SCALE)
+                                        val s = (scale * zoom).coerceIn(1f, zoomCap())
                                         scale = s
                                         if (s <= 1.0001f) offset = Offset.Zero
                                     }
@@ -511,7 +539,7 @@ fun PhotoViewerScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         IconButton(
-                            onClick = { scale = (scale + 0.3f).coerceAtMost(MAX_SCALE) },
+                            onClick = { scale = (scale + 0.3f).coerceAtMost(zoomCap()) },
                             modifier = Modifier.size(34.dp)
                         ) {
                             Icon(Icons.Filled.ZoomIn, "放大", tint = Color.White, modifier = Modifier.size(18.dp))
@@ -619,13 +647,14 @@ fun PhotoViewerScreen(
                         )
                     }
 
-                    // ── 顶部一小行：文件名 ──
+                    // ── 顶部一小行：文件名（居中）──
                     Text(
                         photo.displayName,
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        textAlign = TextAlign.Center,
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(bottom = 6.dp)
@@ -688,7 +717,11 @@ fun PhotoViewerScreen(
 
             // ── 详细信息 ──
             if (showDetail) {
-                PhotoDetailDialog(photo = photo, onClose = { showDetail = false })
+                PhotoDetailDialog(
+                    photo = photo,
+                    crownEvents = crownEvents,
+                    onClose = { showDetail = false }
+                )
             }
 
             // ── 重命名 ──
@@ -706,9 +739,18 @@ fun PhotoViewerScreen(
     }
 }
 
-/** 详细信息弹窗：面板是圆内最大正方形（0.70 × 短边），内容再多也不会被表框切掉 */
+/**
+ * 详细信息弹窗：面板是圆内最大正方形（0.70 × 短边），内容再多也不会被表框切掉。
+ *
+ * 内容超出面板时，除了手指拖动，**表冠也能滚** —— 手表上手指被表框挡着，
+ * 用表冠看「文件夹 / 类型」这些靠下的字段更顺手。
+ */
 @Composable
-private fun PhotoDetailDialog(photo: Photo, onClose: () -> Unit) {
+private fun PhotoDetailDialog(
+    photo: Photo,
+    crownEvents: Flow<Float>,
+    onClose: () -> Unit
+) {
     val date = remember(photo.dateAdded) {
         if (photo.dateAdded <= 0) "—"
         else DateFormat.format("yyyy-MM-dd HH:mm", photo.dateAdded * 1000L).toString()
@@ -721,11 +763,14 @@ private fun PhotoDetailDialog(photo: Photo, onClose: () -> Unit) {
             else -> String.format("%.1f MB", photo.size / 1024f / 1024f)
         }
     }
+    val scroll = rememberScrollState()
+    CrownScroll(crownEvents) { step -> scroll.scrollBy(step) }
     WatchDialog(
         onDismiss = onClose,
         title = "详细信息",
         cancelLabel = "关闭",
-        onCancel = onClose
+        onCancel = onClose,
+        scrollState = scroll
     ) {
         DialogLine("名称", photo.displayName)
         DialogLine("尺寸", if (photo.width > 0) "${photo.width} × ${photo.height}" else "—")
@@ -737,8 +782,10 @@ private fun PhotoDetailDialog(photo: Photo, onClose: () -> Unit) {
 }
 
 /**
- * 重命名弹窗：只用输入框 + 取消 / 确定，**输入交给系统输入法**（不再自绘小键盘）。
- * 弹窗在 `imePadding()` 里居中，键盘弹起时整块面板缩到上方，按钮始终按得到。
+ * 重命名弹窗：只用输入框 + 取消 / 确定，**输入交给系统输入法**（不自绘键盘）。
+ *
+ * 进入弹窗时**不主动弹输入法**：手表上输入法会盖掉大半个面板，先把名字和按钮摆出来，
+ * 用户点一下输入框再调起；输入法上的确认键也不提交，只认面板里的「确定」。
  */
 @Composable
 private fun RenameDialog(
@@ -749,12 +796,6 @@ private fun RenameDialog(
     var text by remember { mutableStateOf(initial) }
     val focus = remember { FocusRequester() }
     val keyboard = LocalSoftwareKeyboardController.current
-
-    LaunchedEffect(Unit) {
-        delay(120)
-        runCatching { focus.requestFocus() }
-        keyboard?.show()
-    }
 
     WatchDialog(
         onDismiss = onDismiss,
@@ -774,11 +815,7 @@ private fun RenameDialog(
         WatchTextField(
             value = text,
             onValueChange = { text = it },
-            focusRequester = focus,
-            onDone = {
-                keyboard?.hide()
-                if (text.isNotBlank()) onConfirm(text)
-            }
+            focusRequester = focus
         )
     }
 }
@@ -806,7 +843,7 @@ private fun decodeSize(
     val longTarget = when (tier) {
         1 -> 1400
         2 -> 2400
-        else -> 3600
+        else -> TOP_TIER_LONG.toInt()
     }
     var w = sw
     var h = sh
@@ -826,8 +863,27 @@ private fun decodeSize(
     return w to h
 }
 
-/** 把平移量限制在「放大后超出容器的部分」以内，避免图片被拖出屏幕 */
-private fun clampOffset(o: Offset, scale: Float, size: IntSize): Offset {
+/**
+ * 一张图各自的放大上限 —— 按**屏幕像素**算，不再写死一个倍数。
+ *
+ * 依据是「这张图还剩多少像素可看」：铺满屏幕后长边约占屏幕长边，所以
+ * `原图长边 / 屏幕长边` 就是 1:1 像素映射对应的倍数，再给 15% 余量；
+ * 同时不能超过最高解码档位（[TOP_TIER_LONG]）—— 超过它只是把像素拉开，不会更清楚。
+ *
+ * 屏幕越大 / 原图越小，上限自动变小；长图（1080×8000）能放到看清文字，
+ * 而 200×200 的小图不会被无意义地拉到十几倍糊成一片。
+ */
+private fun maxZoomFor(photo: Photo?, screenW: Int, screenH: Int): Float {
+    val dispLong = maxOf(screenW, screenH).coerceAtLeast(1).toFloat()
+    val srcW = if (photo != null && photo.width > 0) photo.width else screenW
+    val srcH = if (photo != null && photo.height > 0) photo.height else screenH
+    val srcLong = maxOf(srcW, srcH).toFloat()
+    val cap = minOf(srcLong, TOP_TIER_LONG) / dispLong * 1.15f
+    // 下限 2 倍：再小的图也允许看个大概；上限 16 倍：极端比例的截图也不会失控
+    return cap.coerceIn(2f, 16f)
+}
+
+/** 把平移量限制在「放大后超出容器的部分」以内，避免图片被拖出屏幕 */private fun clampOffset(o: Offset, scale: Float, size: IntSize): Offset {
     val maxX = size.width * (scale - 1f) / 2f
     val maxY = size.height * (scale - 1f) / 2f
     return Offset(

@@ -47,6 +47,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.watchgallery.app.data.CrownMode
 import com.watchgallery.app.data.CrownPrefs
+import com.watchgallery.app.data.ScreenShape
 import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.CrashLogger
 import kotlinx.coroutines.flow.Flow
@@ -257,6 +258,21 @@ private fun SettingsMain(
                 else "关 · 列表只显示首帧，点开仍是动图",
                 onClick = { viewModel.setAnimateGifs(!animateGifs) },
                 itemKey = "row_gif"
+            )
+        }
+        item(key = "row_shape") {
+            val shape by viewModel.screenShape.collectAsState()
+            SettingButton(
+                icon = if (shape == ScreenShape.ROUND) Icons.Filled.Circle
+                else Icons.Filled.CropSquare,
+                title = "屏幕形状",
+                subtitle = when (shape) {
+                    ScreenShape.AUTO -> "自动 · 点击切换圆屏 / 方屏"
+                    ScreenShape.ROUND -> "圆屏 · 列表中间放大，避开弧边"
+                    ScreenShape.SQUARE -> "方屏 · 铺满整屏，不做居中放大"
+                },
+                onClick = { viewModel.setScreenShape(ScreenShape.next(shape)) },
+                itemKey = "row_shape"
             )
         }
         item(key = "row_blur") {

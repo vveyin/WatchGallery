@@ -233,6 +233,7 @@ fun GalleryScreen(
                                     totalCount = folderPhotos.size,
                                     selectionMode = selectionMode,
                                     selectedUris = selectedUris,
+                                    centerScale = isRound,
                                     onLoadMore = {},
                                     onPhotoClick = onPhotoClick,
                                     onRecordOrigin = { rect, painter ->
@@ -270,6 +271,7 @@ fun GalleryScreen(
                     totalCount = totalCount,
                     selectionMode = selectionMode,
                     selectedUris = selectedUris,
+                    centerScale = isRound,
                     onLoadMore = { viewModel.loadMore() },
                     onPhotoClick = onPhotoClick,
                     onRecordOrigin = { rect, painter ->
@@ -398,6 +400,8 @@ private fun ScalingPhotoList(
     totalCount: Int,
     selectionMode: Boolean,
     selectedUris: Set<String>,
+    /** 中间一排放大、上下淡出。圆屏靠它避开弧边；方屏关掉（每张一样大、不透明） */
+    centerScale: Boolean = true,
     onLoadMore: () -> Unit,
     onPhotoClick: (Photo) -> Unit,
     onRecordOrigin: (Rect?, androidx.compose.ui.graphics.painter.Painter?) -> Unit,
@@ -562,7 +566,7 @@ private fun ScalingPhotoList(
                             // 照片滚出屏幕顶部后 cy 会变负；旧代码此时跳过缩放、scale 恢复
                             // 默认 1.0，比周围缩小的照片大，看起来「突然变大」。
                             // 现在 cy 为负时 distance 更大、t 被 clamp 到 1，稳定停在最小缩放。
-                            if (measured.value && viewportCenter > 0f) {
+                            if (centerScale && measured.value && viewportCenter > 0f) {
                                 val distance = kotlin.math.abs(cy - viewportCenter)
                                 // 退出半径加大到 1.05×半屏，让顶部渐隐更平缓，不会到边缘突变。
                                 val radius = viewportCenter * 1.05f

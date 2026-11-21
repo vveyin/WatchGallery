@@ -74,7 +74,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke as DrawStrokeStyle
@@ -111,7 +110,7 @@ private enum class EditTool { NONE, FILTER, ADJUST, CROP, DRAW, TEXT, ROTATE }
 /** 调节参数顺序：亮度 / 对比度 / 饱和度 / 色温 */
 private val AdjustLabels = listOf("亮度", "对比度", "饱和度", "色温")
 
-/** 缩放上限 */
+/** 读不到图片尺寸时的兜底放大上限（正常情况下按屏幕像素现算，见 [maxZoom]） */
 private const val EDIT_MAX_SCALE = 6f
 
 /**
@@ -191,12 +190,37 @@ fun EditScreen(
     }
 
     val density = LocalDensity.current
-    val screenH = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val cfg = LocalConfiguration.current
+    val screenH = with(density) { cfg.screenHeightDp.dp.toPx() }
+    val screenLongPx = with(density) { maxOf(cfg.screenWidthDp, cfg.screenHeightDp).dp.toPx() }
+
+    /**
+     * 编辑页的放大上限：同样按**屏幕像素**算 —— 原图长边 / 屏幕长边，再多 15% 余量。
+     * 小图不会被拉到模糊，长图又能放到看清细节；不再是一个写死的倍数。
+     */
+    val maxZoom = remember(sourceBitmap, screenLongPx) {
+        val b = sourceBitmap
+        if (b == null || screenLongPx <= 0f) EDIT_MAX_SCALE
+        else (maxOf(b.width, b.height) / screenLongPx * 1.15f).coerceIn(2f, 12f)
+    }
 
     // ── 抽屉：0 = 不显示，1 = 全屏 ──
     val drawer = rememberDrawerState(false)
     DrawerSettle(drawer)
     val drawerOpen by remember { derivedStateOf { drawer.progress.floatValue > 0.5f } }
+
+    // 表冠缩放：抽屉收起时才作用在图片上（抽屉展开时表冠留给面板，避免和按钮抢手感）
+    LaunchedEffect(crownEvents) {
+        crownEvents.collect { delta ->
+            if (drawer.progress.floatValue > 0.002f) return@collect
+            val z = (zoom + delta * 0.01f).coerceIn(1f, maxZoom)
+            zoom = z
+            if (z <= 1.0001f) {
+                zoom = 1f
+                pan = Offset.Zero
+            }
+        }
+    }
 
     // 抽屉背景 = 「屏幕等价图」的模糊版：黑底 + 图片按它在屏幕上真实的矩形画进去，再整体模糊。
     var bgImage by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
@@ -400,7 +424,7 @@ fun EditScreen(
                 Box(
                     Modifier
                         .fillMaxSize()
-                        .pointerInput(bmpW, bmpH, wpx, hpx, tool, cropMode) {
+                        .pointerInput(bmpW, bmpH, wpx, hpx, tool, cropMode, maxZoom) {
                             val slop = 6.dp.toPx()
                             awaitEachGesture {
                                 val down = awaitFirstDown(requireUnconsumed = false)
@@ -424,7 +448,7 @@ fun EditScreen(
                                         pinch = true
                                         val z = e.calculateZoom()
                                         if (z != 1f) {
-                                            zoom = (zoom * z).coerceIn(1f, EDIT_MAX_SCALE)
+                                            zoom = (zoom * z).coerceIn(1f, maxZoom)
                                         }
                                         val p = e.calculatePan()
                                         pan += p
@@ -587,7 +611,7 @@ fun EditScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = { zoom = (zoom + 0.3f).coerceAtMost(EDIT_MAX_SCALE) },
+                            onClick = { zoom = (zoom + 0.3f).coerceAtMost(maxZoom) },
                             modifier = Modifier.size(34.dp)
                         ) {
                             Icon(Icons.Filled.ZoomIn, "放大", tint = Color.White, modifier = Modifier.size(18.dp))
@@ -872,15 +896,11 @@ fun EditScreen(
         }
 
         // ── 文本框输入条：只用系统输入法，界面上只有输入框 + 取消 / 确定 ──
+        // 出现时**不主动调起输入法**：先让用户看清输入条和按钮，点一下输入框再弹键盘；
+        // 输入法上的确认键也被禁用（ImeAction.None），只认这里的「确定」。
         val editing = boxes.firstOrNull { it.id == editingId }
         if (editing != null) {
-            val boxFocus = remember { FocusRequester() }
             val keyboard = LocalSoftwareKeyboardController.current
-            LaunchedEffect(editing.id) {
-                delay(100)
-                runCatching { boxFocus.requestFocus() }
-                keyboard?.show()
-            }
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -894,11 +914,6 @@ fun EditScreen(
                         value = editing.text,
                         onValueChange = { v ->
                             boxes = boxes.map { if (it.id == editing.id) it.copy(text = v) else it }
-                        },
-                        focusRequester = boxFocus,
-                        onDone = {
-                            keyboard?.hide()
-                            blurBox()
                         }
                     )
                     Spacer(Modifier.height(6.dp))

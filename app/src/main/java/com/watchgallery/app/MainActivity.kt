@@ -33,6 +33,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import com.watchgallery.app.data.CrownMode
 import com.watchgallery.app.data.CrownPrefs
 import com.watchgallery.app.data.Photo
+import com.watchgallery.app.data.ScreenShape
 import com.watchgallery.app.theme.WatchGalleryTheme
 import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.CrashLogger
@@ -259,10 +260,17 @@ private fun AppNavigation(
     }
 
     val context = LocalContext.current
-    val isRound = remember {
+    val deviceRound = remember {
         context.resources.configuration.screenLayout and
                 android.content.res.Configuration.SCREENLAYOUT_ROUND_MASK ==
                 android.content.res.Configuration.SCREENLAYOUT_ROUND_YES
+    }
+    // 屏幕形状：设置里可以强制「圆屏 / 方屏」。选方屏后整屏铺满、列表不做居中放大。
+    val screenShape by viewModel.screenShape.collectAsState()
+    val isRound = when (screenShape) {
+        ScreenShape.ROUND -> true
+        ScreenShape.SQUARE -> false
+        ScreenShape.AUTO -> deviceRound
     }
     val crownEvents = viewModel.crownEvents
 
@@ -404,12 +412,18 @@ private fun AppNavigation(
         ScreenLayer(Screen.Gallery, interactive = current is Screen.Gallery)
 
         // 上层：栈顶那一屏。右划返回只作用在这一层，底下相册已经画好了，不再复制一份。
+        // 编辑页例外：调参数、涂鸦时特别容易误触左缘，所以**禁用右划返回**，
+        // 返回只走抽屉里那颗按钮（编辑页自己的进出场动画也才不会被手势打断）。
         if (current !is Screen.Gallery) {
-            SwipeBackContainer(
-                onBack = { goBack() },
-                backContent = {},
-                content = { ScreenLayer(current, interactive = true) }
-            )
+            if (current is Screen.Editor) {
+                ScreenLayer(current, interactive = true)
+            } else {
+                SwipeBackContainer(
+                    onBack = { goBack() },
+                    backContent = {},
+                    content = { ScreenLayer(current, interactive = true) }
+                )
+            }
         }
 
         // 设置抽屉：常驻，盖在主导航层之上

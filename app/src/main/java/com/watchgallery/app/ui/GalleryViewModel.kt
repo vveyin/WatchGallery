@@ -14,6 +14,7 @@ import com.watchgallery.app.data.CrownPrefs
 import com.watchgallery.app.data.FolderEntry
 import com.watchgallery.app.data.MediaRepository
 import com.watchgallery.app.data.Photo
+import com.watchgallery.app.data.ScreenShape
 import com.watchgallery.app.data.buildFolders
 import com.watchgallery.app.data.isFolderHidden
 import com.watchgallery.app.edit.EditAdjustments
@@ -207,6 +208,22 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     fun setAnimateGifs(on: Boolean) {
         _animateGifs.value = on
         prefs.edit().putBoolean("animate_gifs", on).apply()
+    }
+
+    /**
+     * 屏幕形状：自动 / 圆屏 / 方屏。
+     *
+     * 系统 `SCREENLAYOUT_ROUND` 在部分设备上不准；而且圆屏那套「列表中间放大、
+     * 上下淡出」在方屏上并不好看，所以允许手动指定。选方屏后整屏铺满、不做居中放大。
+     */
+    private val _screenShape = MutableStateFlow(
+        ScreenShape.fromKey(prefs.getString("screen_shape", ScreenShape.AUTO.key))
+    )
+    val screenShape: StateFlow<ScreenShape> = _screenShape
+
+    fun setScreenShape(shape: ScreenShape) {
+        _screenShape.value = shape
+        prefs.edit().putString("screen_shape", shape.key).apply()
     }
 
     /**
