@@ -72,6 +72,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -179,6 +180,24 @@ fun PhotoViewerScreen(
      */
     fun zoomCap(): Float = maxZoomFor(photos.getOrNull(index), screenWpxTop, screenHpxTop)
 
+    /**
+     * 缩放改变后重新收一次平移量。
+     *
+     * 放大时边界只会变大，不用管；缩小时边界会收窄，如果原本已经把图推到边上，
+     * 这里把它收回允许范围，图不会突然「掉」到屏幕外。
+     */
+    fun reclampOffset() {
+        if (scale <= 1.0001f) {
+            offset = Offset.Zero
+            return
+        }
+        offset = clampOffset(
+            offset, scale,
+            IntSize(screenWpxTop, screenHpxTop),
+            photos.getOrNull(index)
+        )
+    }
+
     // ── 抽屉：0 = 收起，1 = 铺满（三处抽屉统一用 DrawerState）──
     val drawer = rememberDrawerState(false)
     DrawerSettle(drawer)
@@ -249,7 +268,7 @@ fun PhotoViewerScreen(
             if (showDetail || renameTarget != null) return@collect
             val s = (scale + delta * 0.01f).coerceIn(1f, zoomCap())
             scale = s
-            if (s <= 1.0001f) offset = Offset.Zero
+            reclampOffset()
         }
     }
 
@@ -415,12 +434,15 @@ fun PhotoViewerScreen(
                                     contentScale = ContentScale.Fit,
                                     modifier = Modifier
                                         .fillMaxSize()
-                                        .graphicsLayer {
-                                            scaleX = scale
-                                            scaleY = scale
-                                            translationX = offset.x
-                                            translationY = offset.y
-                                        }
+                                    .graphicsLayer {
+                                        // 锚点固定在**屏幕中心**：图片在层里是居中 Fit 的，
+                                        // 图层中心就是屏幕中心，缩放时中间那一点始终不动
+                                        transformOrigin = TransformOrigin(0.5f, 0.5f)
+                                        scaleX = scale
+                                        scaleY = scale
+                                        translationX = offset.x
+                                        translationY = offset.y
+                                    }
                                 )
                             }
                             Image(
@@ -431,6 +453,7 @@ fun PhotoViewerScreen(
                                     .fillMaxSize()
                                     .graphicsLayer {
                                         // 只有当前这张参与缩放/平移；其余保持原始大小，只做位移
+                                        transformOrigin = TransformOrigin(0.5f, 0.5f)
                                         scaleX = if (d == 0) scale else 1f
                                         scaleY = if (d == 0) scale else 1f
                                         translationX = if (d == 0) offset.x else 0f
@@ -497,8 +520,12 @@ fun PhotoViewerScreen(
                                     }
 
                                     if (scale > 1f) {
-                                        // 放大状态：只平移，绝不翻页
-                                        offset = clampOffset(offset + pan, scale, size)
+                                        // 放大状态：只平移，绝不翻页。锚点始终是屏幕中心，
+                                        // 边界按图片实际显示尺寸算，并允许推出去一点点
+                                        offset = clampOffset(
+                                            offset + pan, scale, size,
+                                            photos.getOrNull(index)
+                                        )
                                     } else if (!everZoomed && !multi) {
                                         pageOffset = (pageOffset + pan.y)
                                             .coerceIn(-pageHeight, pageHeight)
@@ -539,7 +566,10 @@ fun PhotoViewerScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         IconButton(
-                            onClick = { scale = (scale + 0.3f).coerceAtMost(zoomCap()) },
+                            onClick = {
+                                scale = (scale + 0.3f).coerceAtMost(zoomCap())
+                                reclampOffset()
+                            },
                             modifier = Modifier.size(34.dp)
                         ) {
                             Icon(Icons.Filled.ZoomIn, "放大", tint = Color.White, modifier = Modifier.size(18.dp))
@@ -547,7 +577,7 @@ fun PhotoViewerScreen(
                         IconButton(
                             onClick = {
                                 scale = (scale - 0.3f).coerceAtLeast(1f)
-                                if (scale <= 1.0001f) offset = Offset.Zero
+                                reclampOffset()
                             },
                             modifier = Modifier.size(34.dp)
                         ) {
@@ -883,9 +913,37 @@ private fun maxZoomFor(photo: Photo?, screenW: Int, screenH: Int): Float {
     return cap.coerceIn(2f, 32f)
 }
 
-/** 把平移量限制在「放大后超出容器的部分」以内，避免图片被拖出屏幕 */private fun clampOffset(o: Offset, scale: Float, size: IntSize): Offset {
-    val maxX = size.width * (scale - 1f) / 2f
-    val maxY = size.height * (scale - 1f) / 2f
+/** 允许推出屏幕的余量：屏幕短边的 10%，推到这儿就停住 */
+private const val OVERSCROLL = 0.10f
+
+/**
+ * 这张图按 `ContentScale.Fit` 摆进屏幕后的实际显示尺寸。
+ *
+ * 平移边界必须按它算，不能按整块屏幕算：一张 4000×1000 的全景图在方屏上只占
+ * 450×112，用屏幕高度当边界的话，能被推出上边框一整屏 —— 图片直接拖没了。
+ */
+private fun fitContentSize(photo: Photo?, screenW: Int, screenH: Int): Pair<Float, Float> {
+    val sw = screenW.coerceAtLeast(1).toFloat()
+    val sh = screenH.coerceAtLeast(1).toFloat()
+    val iw = if (photo != null && photo.width > 0) photo.width.toFloat() else sw
+    val ih = if (photo != null && photo.height > 0) photo.height.toFloat() else sh
+    val k = minOf(sw / iw, sh / ih)
+    return iw * k to ih * k
+}
+
+/**
+ * 把平移量限制在「放大后图片超出屏幕的部分 + 一点余量」以内。
+ *
+ * 缩放锚点固定是**屏幕中心**（见 graphicsLayer 的 transformOrigin），所以这里只算平移：
+ *  - 先把图片边缘刚好贴到屏幕边，这是「看得到整张图」的范围；
+ *  - 再各加 [OVERSCROLL] 的余量，图片可以被推出去一点，松手后停在那儿；
+ *  - 推到头就硬停，不会出现「一滑图片就不见了」。
+ */
+private fun clampOffset(o: Offset, scale: Float, screen: IntSize, photo: Photo?): Offset {
+    val (cw, ch) = fitContentSize(photo, screen.width, screen.height)
+    val slack = minOf(screen.width, screen.height) * OVERSCROLL
+    val maxX = maxOf(0f, (cw * scale - screen.width) / 2f) + slack
+    val maxY = maxOf(0f, (ch * scale - screen.height) / 2f) + slack
     return Offset(
         o.x.coerceIn(-maxX, maxX),
         o.y.coerceIn(-maxY, maxY)

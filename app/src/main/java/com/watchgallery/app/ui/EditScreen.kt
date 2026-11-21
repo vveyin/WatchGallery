@@ -75,6 +75,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke as DrawStrokeStyle
 import androidx.compose.ui.graphics.graphicsLayer
@@ -340,6 +341,19 @@ fun EditScreen(
                     )
                 }
 
+                /**
+                 * 平移边界：按**图片自身尺寸**算（不是整块屏幕），再各放屏幕短边 10% 的余量。
+                 *
+                 * 图片边缘贴到屏幕边之后还能再推出去一点，推到余量上限就硬停 ——
+                 * 既满足「放大后可以挪到屏幕外一点」，又不会一滑把图推出屏幕再也找不回来。
+                 */
+                fun clampPan(p: Offset): Offset {
+                    val slack = minOf(maxW, maxH) * 0.10f
+                    val mx = wpx * (zoom - 1f) / 2f + slack
+                    val my = hpx * (zoom - 1f) / 2f + slack
+                    return Offset(p.x.coerceIn(-mx, mx), p.y.coerceIn(-my, my))
+                }
+
                 // 屏幕坐标 → 原图像素：先扣掉平移、除以缩放，再除以「原图→控件」比例
                 fun toBitmap(p: Offset): Offset {
                     val local = Offset(
@@ -356,6 +370,9 @@ fun EditScreen(
                             .align(Alignment.Center)
                             .size(with(density) { wpx.toDp() }, with(density) { hpx.toDp() })
                             .graphicsLayer {
+                                // 图片框居中对齐，图层中心就是屏幕中心：
+                                // 放大时以屏幕中心为锚点，而不是跟着图片自己中心跑
+                                transformOrigin = TransformOrigin(0.5f, 0.5f)
                                 scaleX = zoom
                                 scaleY = zoom
                                 translationX = pan.x
@@ -451,17 +468,11 @@ fun EditScreen(
                                             zoom = (zoom * z).coerceIn(1f, maxZoom)
                                         }
                                         val p = e.calculatePan()
-                                        pan += p
                                         if (zoom <= 1.001f) {
                                             zoom = 1f
                                             pan = Offset.Zero
                                         } else {
-                                            val mx = wpx * (zoom - 1f) / 2f
-                                            val my = hpx * (zoom - 1f) / 2f
-                                            pan = Offset(
-                                                pan.x.coerceIn(-mx, mx),
-                                                pan.y.coerceIn(-my, my)
-                                            )
+                                            pan = clampPan(pan + p)
                                         }
                                         e.changes.forEach { it.consume() }
                                         continue
@@ -504,13 +515,8 @@ fun EditScreen(
                                                 }
                                             }
                                             zoom > 1.001f -> {
-                                                // 放大后单指平移
-                                                val mx = wpx * (zoom - 1f) / 2f
-                                                val my = hpx * (zoom - 1f) / 2f
-                                                pan = Offset(
-                                                    (pan.x + delta.x).coerceIn(-mx, mx),
-                                                    (pan.y + delta.y).coerceIn(-my, my)
-                                                )
+                                                // 放大后单指平移（同样允许推出屏幕一点）
+                                                pan = clampPan(pan + delta)
                                             }
                                         }
                                         c.consume()
@@ -551,6 +557,9 @@ fun EditScreen(
                             .align(Alignment.Center)
                             .size(with(density) { wpx.toDp() }, with(density) { hpx.toDp() })
                             .graphicsLayer {
+                                // 图片框居中对齐，图层中心就是屏幕中心：
+                                // 放大时以屏幕中心为锚点，而不是跟着图片自己中心跑
+                                transformOrigin = TransformOrigin(0.5f, 0.5f)
                                 scaleX = zoom
                                 scaleY = zoom
                                 translationX = pan.x
