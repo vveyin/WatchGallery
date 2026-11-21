@@ -122,9 +122,10 @@ fun PhotoViewerScreen(
     // 入场动画：从点击的那张缩略图位置放大到全屏。
     // 相册点开大图原本是「瞬间替换画面」，没有一点过渡；这里用 280ms 缓动把它补上，
     // 有缩略图矩形就从那张的位置长大，取不到（比如表冠触发）就退化成淡入 + 轻微放大。
-    val enter = remember { Animatable(0f) }
+    // 没有缩略图矩形（例如从别处进入、或编辑完返回）就完全不做入场动画，避免反复「重新打开」的观感
+    val enter = remember { Animatable(if (origin == null) 1f else 0f) }
     LaunchedEffect(Unit) {
-        enter.animateTo(1f, tween(280, easing = FastOutSlowInEasing))
+        if (origin != null) enter.animateTo(1f, tween(280, easing = FastOutSlowInEasing))
     }
     var animJob by remember { mutableStateOf<Job?>(null) }
 

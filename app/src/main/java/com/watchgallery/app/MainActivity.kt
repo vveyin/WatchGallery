@@ -269,6 +269,15 @@ private fun AppNavigation(
     var settingsOpen by remember { mutableStateOf(false) }
     var settingsAtRoot by remember { mutableStateOf(true) }  // 设置是否在一级菜单
 
+    // 入场动画只用一次：大图页读到缩略图矩形后就清掉，
+    // 之后从编辑页返回时不会再放大一遍（看起来像重新打开）。
+    LaunchedEffect(backStack.lastOrNull(), viewerOrigin) {
+        if (backStack.lastOrNull() is Screen.Viewer && viewerOrigin != null) {
+            kotlinx.coroutines.delay(500)
+            viewerOrigin = null
+        }
+    }
+
     fun navigate(to: Screen) { backStack.add(to) }
     fun goBack() { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) }
 
