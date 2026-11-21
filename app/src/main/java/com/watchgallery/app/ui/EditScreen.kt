@@ -3,8 +3,8 @@ package com.watchgallery.app.ui
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.RectF
-import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -14,7 +14,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -81,6 +81,7 @@ import com.watchgallery.app.data.Photo
 import com.watchgallery.app.edit.EditAdjustments
 import com.watchgallery.app.edit.FilterPreset
 import com.watchgallery.app.edit.Stroke as DrawStroke
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlin.math.min
 import kotlin.math.sqrt
@@ -156,11 +157,18 @@ fun EditScreen(
     // ── 抽屉：可见高度 panelHeight，0~maxPanel ──
     val snaps = remember(density) { PanelSnapDp.map { with(density) { it.dp.toPx() } } }
     val maxPanel = snaps.last()
-    // 初始停在「工具栏」那一档：进编辑页就能看见工具，同时底部还有把手可拉
-    val panel = remember(snaps) { Animatable(snaps[1]) }
+    // 抽屉露出高度。这里故意不用 Animatable：
+    // 拖动发生在 awaitEachGesture 的「受限挂起作用域」里，调不了 Animatable.snapTo，
+    // 只能往 scope 里 launch 一个协程 —— 每帧一个，旧值后到就把面板拉回去（抽搐）。
+    // 换成普通 Float 状态：拖动直接赋值（同步、零延迟），松手再用一个可取消的 Job 跑吸附动画。
+    var panel by remember(snaps) { mutableFloatStateOf(snaps[1]) }
+    var panelJob by remember { mutableStateOf<Job?>(null) }
 
     fun settleTo(target: Float) {
-        scope.launch { panel.animateTo(target, tween(240, easing = FastOutSlowInEasing)) }
+        panelJob?.cancel()
+        panelJob = scope.launch {
+            animate(panel, target, animationSpec = tween(240, easing = FastOutSlowInEasing)) { v, _ -> panel = v }
+        }
     }
 
     // 背景用**图片自己**糊一张，而不是抓屏：
@@ -195,7 +203,7 @@ fun EditScreen(
         tool = if (tool == t) EditTool.NONE else t
         if (tool != EditTool.NONE) {
             val target = if (tool == EditTool.ADJUST) snaps[3] else snaps[2]
-            if (panel.value < target - 2f) settleTo(target)
+            if (panel < target - 2f) settleTo(target)
         }
     }
 
@@ -343,36 +351,49 @@ fun EditScreen(
             }
         }
 
-        // ── 抽屉完全收起后，屏幕底部仍留一条白线 + 上滑热区，否则没有抓手上再拉开 ──
-        // 用 derivedStateOf 把「每帧都变的位移」压成布尔：只在跨越阈值时重组
-        val showPullHandle by remember { derivedStateOf { panel.value < 1f } }
-        if (showPullHandle) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .height(46.dp)
-                    .pointerInput(Unit) {
-                        awaitEachGesture {
-                            awaitFirstDown(requireUnconsumed = false)
-                            var total = 0f
-                            var decided = false
+        // ── 抽屉完全收起后的拉起热区 ──
+        // 这块**必须常驻组合**：上一版按 panel 值做条件渲染，刚一拉动 panel 就 > 0、
+        // 节点被移出组合，连它的 pointerInput 协程一起取消 —— 手感就是拉一下就断。
+        // 只有白线跟着收起状态显示/隐藏。
+        // 用 derivedStateOf 把「每帧都变的位移」压成布尔：只在跨越阈值时重组。
+        val showPullLine by remember { derivedStateOf { panel < 1f } }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(46.dp)
+                .pointerInput(Unit) {
+                    val slop = 6.dp.toPx()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        // 抽屉已经露出来了：这块归面板自己管，别重复拖
+                        if (panel >= 1f) {
                             while (true) {
-                                val e = awaitPointerEvent(PointerEventPass.Initial)
+                                val e = awaitPointerEvent()
                                 if (e.changes.all { !it.pressed }) break
-                                val c = e.changes.first()
-                                total += c.position.y - c.previousPosition.y
-                                if (!decided && total < -6f) decided = true
-                                if (decided) {
-                                    c.consume()
-                                    scope.launch { panel.snapTo((-total).coerceIn(0f, maxPanel)) }
-                                }
                             }
-                            if (decided) settleTo(nearestSnap(panel.value))
+                            return@awaitEachGesture
                         }
-                    },
-                contentAlignment = Alignment.BottomCenter
-            ) {
+                        val start = panel
+                        var dragged = false
+                        while (true) {
+                            val e = awaitPointerEvent(PointerEventPass.Initial)
+                            if (e.changes.all { !it.pressed }) break
+                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                            val dy = c.position.y - down.position.y
+                            if (!dragged && dy < -slop) dragged = true
+                            if (dragged) {
+                                c.consume()
+                                panelJob?.cancel()
+                                panel = (start - dy).coerceIn(0f, maxPanel)
+                            }
+                        }
+                        if (dragged) settleTo(nearestSnap(panel))
+                    }
+                },
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            if (showPullLine) {
                 Box(
                     Modifier
                         .padding(bottom = 10.dp)
@@ -387,7 +408,7 @@ fun EditScreen(
         // ── 毛玻璃条：固定贴底，只露出抽屉盖住的那一块（不跟面板一起升降）──
         if (blurEnabled) {
             BlurBand(
-                heightPx = { panel.value },
+                heightPx = { panel },
                 image = bgImage,
                 dim = 0.18f,
                 cornerRadiusPx = with(density) { 22.dp.toPx() },
@@ -405,11 +426,33 @@ fun EditScreen(
                 .graphicsLayer {
                     // panel 从 0 长到 maxPanel；面板整体下移 (maxPanel - panel)，
                     // 屏幕上露出的正好是面板顶部那一段，内容不会跟着重排。
-                    translationY = maxPanel - panel.value
+                    translationY = maxPanel - panel
                 }
-                // 抽屉上的纵向拖动不再穿透到下面的图片（否则会把「拉抽屉」当成涂鸦/裁剪）
+                // 整块面板都能上下拖（30dp 的把手在圆屏上太难按）。
+                // 拖动直接在当前协程里 snapTo：每帧 launch 一个协程会出现
+                // 旧值后到、面板来回跳（就是「抽搐」），而且松手后残留的
+                // snapTo 还会把刚吸好的档位又拉回去。
                 .pointerInput(Unit) {
-                    detectVerticalDragGestures { change, _ -> change.consume() }
+                    val slop = 8.dp.toPx()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val start = panel
+                        var dragged = false
+                        while (true) {
+                            val e = awaitPointerEvent()
+                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                            val dy = c.position.y - down.position.y
+                            if (!dragged && kotlin.math.abs(dy) > slop) dragged = true
+                            if (dragged) {
+                                c.consume()
+                                // 1:1 跟手，位移不足以拖到最低档时会在松手后吸附到最近档
+                                panelJob?.cancel()
+                                panel = (start - dy).coerceIn(0f, maxPanel)
+                            }
+                            if (!c.pressed) break
+                        }
+                        if (dragged) settleTo(nearestSnap(panel))
+                    }
                 },
             color = if (blurEnabled) Color.Transparent else MaterialTheme.colorScheme.surface,
             tonalElevation = 0.dp,
@@ -421,36 +464,13 @@ fun EditScreen(
                         .fillMaxSize()
                         .padding(horizontal = 10.dp)
                 ) {
-                    // ── 把手：拖动跟手、松手吸最近档；轻点逐档展开/收起 ──
+                    // ── 把手：轻点逐档展开/收起（上下拖动交给整块面板）──
                     Box(
                         Modifier
                             .fillMaxWidth()
                             .height(30.dp)
                             .pointerInput(Unit) {
-                                awaitEachGesture {
-                                    val down = awaitFirstDown(requireUnconsumed = false)
-                                    // 按下先抓一帧背景（此刻抽屉还停在原档位，拍到的是干净的图片）
-                                    if (blurEnabled && window != null) BlurBackdrop.capture(window)
-                                    val start = panel.value
-                                    var dragged = false
-                                    while (true) {
-                                        val e = awaitPointerEvent(PointerEventPass.Initial)
-                                        val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                                        val dy = c.position.y - down.position.y
-                                        if (!dragged && kotlin.math.abs(dy) > 6f) dragged = true
-                                        if (dragged) {
-                                            c.consume()
-                                            val target = (start - dy).coerceIn(0f, maxPanel)
-                                            scope.launch { panel.snapTo(target) }
-                                        }
-                                        if (!c.pressed) break
-                                    }
-                                    if (dragged) {
-                                        settleTo(nearestSnap(panel.value))
-                                    } else {
-                                        settleTo(nextSnap(panel.value))
-                                    }
-                                }
+                                detectTapGestures { settleTo(nextSnap(panel)) }
                             },
                         contentAlignment = Alignment.Center
                     ) {
