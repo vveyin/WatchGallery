@@ -392,10 +392,19 @@ private fun ScalingPhotoList(
                                 // 改为「只观察、不消费」，等 detectTapGestures 的 onLongPress 置位后再接管。
                                 .pointerInput(photo.uri.toString()) {
                                     awaitEachGesture {
-                                        // 已在多选模式：交给覆盖层统一处理
+                                        // ⚠️ 顺序极其重要：必须先挂起等按下，再判断多选状态。
+                                        // awaitEachGesture 的实现是
+                                        //   while (isActive) { awaitPointerEventScope { block() } }
+                                        // 如果 block 在**任何挂起点之前**就 return，下一轮会立刻再次
+                                        // 调用 block —— 形成没有挂起点的空转循环，把主线程
+                                        // （AndroidUiDispatcher.Main）占满：UI 立即卡死、几秒后 ANR 被杀。
+                                        // 这正是 v0.26/v0.27「长按进多选后松手，卡几秒直接崩溃」的根因：
+                                        // 原来这里第一行就 `if (selectionMode) return`，一旦进入多选，
+                                        // 屏幕上每个可见单元格都在空转。
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        // 已在多选模式：交给覆盖层统一处理，本次手势什么都不做
                                         if (selectionModeState.value) return@awaitEachGesture
                                         longPressed.value = false
-                                        val down = awaitFirstDown(requireUnconsumed = false)
                                         gestureHits.clear()
                                         var lastChange = down
                                         // 长按前只观察：不消费，滚动/单击都不受影响

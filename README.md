@@ -43,6 +43,20 @@
 - **手动导入**：空相册可直接用系统文件选择器导入照片，内容复制进应用私有目录，永远读得到
 - **扫描诊断页**：设置 → 扫描诊断，展示权限、媒体库行数、目录命中、异常信息
 
+### 修复「松手才卡、几秒后崩溃」的真凶：awaitEachGesture 空转 + 主线程看门狗（v0.28）
+- **根因**：`awaitEachGesture` 的内部实现是 `while (isActive) { awaitPointerEventScope { block() } }`。
+  v0.27 的拖动接续协程在 block 的**第一行**就写了 `if (selectionMode) return@awaitEachGesture`，
+  于是在多选模式下 block 还没碰到任何挂起点就返回，下一轮立刻再次调用它 —— 变成**没有挂起点的
+  忙循环**，把 `AndroidUiDispatcher.Main` 彻底占满。
+  - 手指按着时协程正挂在 `awaitPointerEvent` 上，所以拖动过程还看着正常；**一松手**循环就开始空转，
+    屏幕上每个可见单元格各跑一个 → 界面立即卡死，几秒后 ANR，系统杀掉进程，日志里只剩 `START`
+  - 修复：把 `awaitFirstDown()` 提到状态判断**之前**，保证每一轮 block 至少挂起一次等手指按下；
+    多选模式下直接 return 只是「等下一次按下」，不再空转
+- **新增主线程看门狗** `util/MainThreadWatchdog.kt`：ANR 不经过 `UncaughtExceptionHandler`，
+  所以卡死永远抓不到堆栈。现在后台守护线程每 1s 往主线程投一次心跳，超过 2.6s 未执行即判定阻塞，
+  抓取主线程堆栈写入崩溃日志并置位 `crash.pending`，下次启动的崩溃报告页就能直接看到卡在哪一行
+- versionCode=28 / versionName=0.28
+
 ### 冷启动自动更新检测 + 修复长按多选卡死（v0.27）
 - **冷启动自动检查更新**：打开 App 时自动检测新版本，只在**进程第一次启动**时执行
   - 从后台回到前台不会重建 Activity，天然不触发；配置变化重建时由进程级标记拦住
