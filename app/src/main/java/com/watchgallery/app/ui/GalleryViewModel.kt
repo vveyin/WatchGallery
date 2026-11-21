@@ -71,6 +71,15 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putInt("grid_columns", c).apply()
     }
 
+    /** 图片列表是否显示图片名，默认显示；设置页可关 */
+    private val _showPhotoNames = MutableStateFlow(prefs.getBoolean("show_names", true))
+    val showPhotoNames: StateFlow<Boolean> = _showPhotoNames
+
+    fun setShowPhotoNames(show: Boolean) {
+        _showPhotoNames.value = show
+        prefs.edit().putBoolean("show_names", show).apply()
+    }
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
