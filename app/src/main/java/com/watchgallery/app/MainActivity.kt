@@ -250,8 +250,12 @@ private fun AppNavigation(
     val photos by viewModel.viewerPhotos.collectAsState()
     val selectionMode by viewModel.selectionMode.collectAsState()
     val showZoomButtons by viewModel.showZoomButtons.collectAsState()
-    // 打开大图时点击的那张缩略图位置，供大图页做「从缩略图展开」的入场动画
+    val blurBackdrop by viewModel.blurBackdrop.collectAsState()
+    // 打开大图时点击的那张缩略图位置 + 已解码的缩略图本身，供大图页做「从缩略图展开」的入场动画
     var viewerOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
+    var viewerThumb by remember {
+        mutableStateOf<androidx.compose.ui.graphics.painter.Painter?>(null)
+    }
 
     val context = LocalContext.current
     val isRound = remember {
@@ -337,6 +341,7 @@ private fun AppNavigation(
                     onPhotoClick = { photo ->
                         if (interactive) {
                             viewerOrigin = viewModel.viewerOrigin
+                            viewerThumb = viewModel.viewerThumb
                             currentPhoto = photo
                             navigate(Screen.Viewer)
                         }
@@ -353,6 +358,8 @@ private fun AppNavigation(
                         crownEvents = layerCrown,
                         showZoomButtons = showZoomButtons,
                         origin = viewerOrigin,
+                        thumb = viewerThumb,
+                        blurEnabled = blurBackdrop,
                         onBack = { if (interactive) goBack() },
                         onEdit = { photo ->
                             if (interactive) { currentPhoto = photo; navigate(Screen.Editor) }
@@ -364,6 +371,7 @@ private fun AppNavigation(
                         photo = photo,
                         viewModel = viewModel,
                         isRound = isRound,
+                        blurEnabled = blurBackdrop,
                         onBack = { if (interactive) goBack() }
                     )
                 }
@@ -395,20 +403,20 @@ private fun AppNavigation(
             collapsedY = collapsedY,
             canDragDown = settingsAtRoot,
             enabled = !settingsOpen && current is Screen.Gallery && !selectionMode,
+            blurEnabled = blurBackdrop,
             onOpened = { settingsOpen = true },
             onClosed = { settingsOpen = false }
         ) {
-            Box(Modifier.fillMaxSize().background(Color.Black)) {
-                SettingsScreen(
-                    viewModel = viewModel,
-                    isRound = isRound,
-                    crownEvents = if (settingsOpen) crownEvents else emptyFlow(),
-                    onBack = {},
-                    onCrownPrefsChanged = onCrownPrefsChanged,
-                    onCheckUpdate = { closeSettings(); navigate(Screen.Update) },
-                    onSubPageChanged = { settingsAtRoot = it }
-                )
-            }
+            // 背景透明：毛玻璃背板由 SettingsDrawer 画，设置条目浮在上面
+            SettingsScreen(
+                viewModel = viewModel,
+                isRound = isRound,
+                crownEvents = if (settingsOpen) crownEvents else emptyFlow(),
+                onBack = {},
+                onCrownPrefsChanged = onCrownPrefsChanged,
+                onCheckUpdate = { closeSettings(); navigate(Screen.Update) },
+                onSubPageChanged = { settingsAtRoot = it }
+            )
         }
 
         SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))

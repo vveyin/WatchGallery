@@ -4,6 +4,7 @@ import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -39,6 +40,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
@@ -60,8 +62,10 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import com.watchgallery.app.data.Photo
 import kotlinx.coroutines.Job
@@ -105,6 +109,8 @@ fun PhotoViewerScreen(
     crownEvents: Flow<Float> = emptyFlow(),
     showZoomButtons: Boolean = true,
     origin: Rect? = null,
+    thumb: androidx.compose.ui.graphics.painter.Painter? = null,
+    blurEnabled: Boolean = true,
     onBack: () -> Unit,
     onEdit: (Photo) -> Unit
 ) {
@@ -130,6 +136,8 @@ fun PhotoViewerScreen(
     var animJob by remember { mutableStateOf<Job?>(null) }
 
     val density = LocalDensity.current
+    val view = LocalView.current
+    val window = remember(view) { view.context.findHostActivity()?.window }
     val drawerPx = with(density) { DrawerHeight.toPx() }
     val handlePx = with(density) { HandleZone.toPx() }
     val slopPx = with(density) { 6.dp.toPx() }
@@ -143,12 +151,19 @@ fun PhotoViewerScreen(
 
     fun openDrawer() {
         drawerOpen = true
-        scope.launch { drawerOffset.animateTo(0f, tween(240, easing = FastOutSlowInEasing)) }
+        scope.launch {
+            drawerOffset.animateTo(0f, tween(240, easing = FastOutSlowInEasing))
+            // 落位后 100ms 重抓一张：与 f-x 一致。单指操作、抽屉静止时静态背景不会穿帮。
+            if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 100)
+        }
     }
 
     fun closeDrawer() {
         drawerOpen = false
-        scope.launch { drawerOffset.animateTo(drawerPx, tween(200, easing = FastOutSlowInEasing)) }
+        scope.launch {
+            drawerOffset.animateTo(drawerPx, tween(200, easing = FastOutSlowInEasing))
+            if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 100)
+        }
     }
 
     fun resetZoom() {
@@ -236,6 +251,8 @@ fun PhotoViewerScreen(
             val keyByUri = n >= 3
             // 当前这张排在最前：入队顺序靠前，加载优先级更高，进页面时先出图
             val slots = if (range >= 2) intArrayOf(0, -1, 1, -2, 2) else intArrayOf(0, -1, 1)
+            // 入场那一张的 uri：缩略图只在它还没解码完成时垫在下面
+            val startUri = remember { photos.getOrNull(index)?.uri?.toString() }
 
             val rootW = constraints.maxWidth.toFloat()
             val rootH = constraints.maxHeight.toFloat()
@@ -268,8 +285,30 @@ fun PhotoViewerScreen(
                                 .fillMaxSize()
                                 .graphicsLayer { translationY = d * pageH + pageOffset }
                         ) {
+                            val bigPainter = rememberAsyncImagePainter(p.uri)
+                            // 读 painter.state 本身就会订阅（Coil 内部是 mutableStateOf）
+                            val bigState = bigPainter.state
+                            val loaded = bigState is AsyncImagePainter.State.Success
+                            // 大图还没解码好时，用列表里那张已经解码的缩略图垫底：
+                            // 入场动画第一帧就有内容，用户看到的是「点下去立刻放大」。
+                            val useThumb = d == 0 && !loaded && thumb != null &&
+                                    p.uri.toString() == startUri
+                            // 大图解码完成后淡入，观感上像是「缩略图变清晰」而不是硬切
+                            val bigAlpha by animateFloatAsState(
+                                targetValue = if (useThumb) 0f else 1f,
+                                animationSpec = tween(160),
+                                label = "bigAlpha"
+                            )
+                            if (useThumb) {
+                                Image(
+                                    painter = thumb!!,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier.fillMaxSize()
+                                )
+                            }
                             Image(
-                                painter = rememberAsyncImagePainter(p.uri),
+                                painter = bigPainter,
                                 contentDescription = p.displayName,
                                 contentScale = ContentScale.Fit,
                                 modifier = Modifier
@@ -280,6 +319,7 @@ fun PhotoViewerScreen(
                                         scaleY = if (d == 0) scale else 1f
                                         translationX = if (d == 0) offset.x else 0f
                                         translationY = if (d == 0) offset.y else 0f
+                                        alpha = bigAlpha
                                     }
                             )
                         }
@@ -415,6 +455,8 @@ fun PhotoViewerScreen(
                         .pointerInput(Unit) {
                             awaitEachGesture {
                                 awaitFirstDown(requireUnconsumed = false)
+                                // 按下就抓一帧：抽屉还在屏幕外，拍到的是干净的大图
+                                if (blurEnabled && window != null) BlurBackdrop.capture(window)
                                 var total = 0f
                                 var decided = false
                                 while (true) {
@@ -497,13 +539,19 @@ fun PhotoViewerScreen(
                             }
                         }
                     },
-                color = MaterialTheme.colorScheme.surface,
+                color = if (blurEnabled) Color.Transparent else MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
                 shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
             ) {
-                Column(
-                    modifier = Modifier.fillMaxSize(),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
+                Box(Modifier.fillMaxSize()) {
+                    // 毛玻璃背板：按整屏尺寸画、底边对齐，只露出最下面这一条
+                    if (blurEnabled) {
+                        BlurPlate(Modifier.fillMaxSize(), dim = 0.20f, anchorBottom = true)
+                    }
+                    Column(
+                        modifier = Modifier.fillMaxSize(),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                     Box(
                         Modifier
                             .padding(top = 6.dp)
@@ -532,6 +580,7 @@ fun PhotoViewerScreen(
                             Spacer(Modifier.width(6.dp))
                             Text("编辑", style = MaterialTheme.typography.labelLarge)
                         }
+                    }
                     }
                 }
             }

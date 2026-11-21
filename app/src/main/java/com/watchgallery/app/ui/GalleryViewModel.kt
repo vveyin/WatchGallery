@@ -184,10 +184,31 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 抽屉毛玻璃背景开关，默认开。
+     * 关了之后设置 / 大图 / 编辑三处抽屉都退回纯色背板 —— 老设备 GPU 吃力时可以关掉省电。
+     */
+    private val _blurBackdrop = MutableStateFlow(prefs.getBoolean("blur_backdrop", true))
+    val blurBackdrop: StateFlow<Boolean> = _blurBackdrop
+
+    fun setBlurBackdrop(on: Boolean) {
+        _blurBackdrop.value = on
+        prefs.edit().putBoolean("blur_backdrop", on).apply()
+    }
+
+    /**
      * 最近一次点击的缩略图在屏幕上的矩形（px，相对窗口根布局）。
      * 只用于大图页的入场动画：从缩略图位置放大到全屏。不做状态观察，读一次即可。
      */
     var viewerOrigin: androidx.compose.ui.geometry.Rect? = null
+
+    /**
+     * 最近一次点击的那张缩略图 painter（Coil 已经解码在内存里的那张）。
+     *
+     * 大图页第一帧直接拿它铺满全屏来播入场动画：解码大图要几十到上百毫秒，
+     * 若等大图出来再画，用户先看到的是黑屏，动画等于白播。
+     * 缩略图先顶上，大图加载完成后再淡入替换，观感就是「点下去立刻放大」。
+     */
+    var viewerThumb: androidx.compose.ui.graphics.painter.Painter? = null
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message

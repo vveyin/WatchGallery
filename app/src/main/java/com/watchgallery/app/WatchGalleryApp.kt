@@ -1,6 +1,7 @@
 package com.watchgallery.app
 
 import android.app.Application
+import com.watchgallery.app.ui.BlurBackdrop
 import com.watchgallery.app.util.CrashLogger
 import com.watchgallery.app.util.MainThreadWatchdog
 
@@ -12,5 +13,7 @@ class WatchGalleryApp : Application() {
         CrashLogger.logStart(this)
         // ANR 不走 UncaughtExceptionHandler，单独用看门狗抓主线程堆栈
         MainThreadWatchdog.install(this)
+        // 毛玻璃背景的 RenderScript 需要 applicationContext（后台线程复用实例）
+        BlurBackdrop.appContext = this
     }
 }

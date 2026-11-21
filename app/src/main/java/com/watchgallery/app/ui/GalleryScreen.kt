@@ -223,7 +223,10 @@ fun GalleryScreen(
                                     selectedUris = selectedUris,
                                     onLoadMore = {},
                                     onPhotoClick = onPhotoClick,
-                                    onRecordOrigin = { viewModel.viewerOrigin = it },
+                                    onRecordOrigin = { rect, painter ->
+                                        viewModel.viewerOrigin = rect
+                                        viewModel.viewerThumb = painter
+                                    },
                                     onOpenPhoto = { uri ->
                                         folderPhotos.firstOrNull { it.uri.toString() == uri }?.let(onPhotoClick)
                                     },
@@ -256,7 +259,10 @@ fun GalleryScreen(
                     selectedUris = selectedUris,
                     onLoadMore = { viewModel.loadMore() },
                     onPhotoClick = onPhotoClick,
-                    onRecordOrigin = { viewModel.viewerOrigin = it },
+                    onRecordOrigin = { rect, painter ->
+                        viewModel.viewerOrigin = rect
+                        viewModel.viewerThumb = painter
+                    },
                     onOpenPhoto = { uri ->
                         photos.firstOrNull { it.uri.toString() == uri }?.let(onPhotoClick)
                     },
@@ -375,7 +381,7 @@ private fun ScalingPhotoList(
     selectedUris: Set<String>,
     onLoadMore: () -> Unit,
     onPhotoClick: (Photo) -> Unit,
-    onRecordOrigin: (Rect?) -> Unit,
+    onRecordOrigin: (Rect?, androidx.compose.ui.graphics.painter.Painter?) -> Unit,
     onOpenPhoto: (String) -> Unit,
     onLongPress: (String) -> Unit,
     onToggle: (String) -> Unit,
@@ -403,6 +409,10 @@ private fun ScalingPhotoList(
 
     // 每张照片的屏幕矩形（px），供滑动刷选判定命中用。key = uri 字符串。
     val cellRects = remember { mutableMapOf<String, Rect>() }
+
+    // 每张照片当前那个已解码的缩略图 painter：多选覆盖层里点开大图时，
+    // 大图页要拿它当入场动画的第一帧（此时网格 item 的组合可能已被复用）。
+    val painterByUri = remember { mutableMapOf<String, androidx.compose.ui.graphics.painter.Painter>() }
 
     // 多选轻点的判定尺寸（px）：
     //  - 复选圈圆心距 cell 右上角各 5dp+11dp=16dp，热区半径放大到 20dp（手指粗，宁大勿小）；
@@ -483,6 +493,12 @@ private fun ScalingPhotoList(
                 // 滚出屏幕被回收时清掉矩形，避免复制剩余项里残留旧坐标、划选误中屏幕外的照片
                 DisposableEffect(photo.uri) {
                     onDispose { cellRects.remove(photo.uri.toString()) }
+                }
+                // 缩略图 painter：既给网格画，也给点击大图时的入场动画当第一帧用
+                val thumbPainter = rememberAsyncImagePainter(photo.uri)
+                SideEffect { painterByUri[photo.uri.toString()] = thumbPainter }
+                DisposableEffect(photo.uri) {
+                    onDispose { painterByUri.remove(photo.uri.toString()) }
                 }
                 // 本单元格的长按信号：由 detectTapGestures 置位，拖动接续的协程读取
                 val longPressed = remember { mutableStateOf(false) }
@@ -583,14 +599,17 @@ private fun ScalingPhotoList(
                                         },
                                         onTap = {
                                             // 记下这张缩略图在屏幕上的位置：大图页会从这里放大展开
-                                            onRecordOrigin(cellRects[photo.uri.toString()])
+                                            onRecordOrigin(
+                                                cellRects[photo.uri.toString()],
+                                                thumbPainter
+                                            )
                                             onPhotoClick(photo)
                                         }
                                     )
                                 }
                         )
                 ) {
-                    PhotoCard(photo, showNames)
+                    PhotoCard(photo, showNames, thumbPainter)
                     if (selectionMode) {
                         SelectionCheck(checked = photo.uri.toString() in selectedUris)
                     }
@@ -647,7 +666,7 @@ private fun ScalingPhotoList(
                                         if (cell != null && inCheckCircle(cell, p, circleInsetPx, circleRadiusPx)) {
                                             onToggle(startUri)
                                         } else {
-                                            onRecordOrigin(cell)
+                                            onRecordOrigin(cell, painterByUri[startUri])
                                             onOpenPhoto(startUri)
                                         }
                                     }
@@ -661,7 +680,11 @@ private fun ScalingPhotoList(
 }
 
 @Composable
-private fun PhotoCard(photo: Photo, showName: Boolean) {
+private fun PhotoCard(
+    photo: Photo,
+    showName: Boolean,
+    painter: androidx.compose.ui.graphics.painter.Painter
+) {
     Card(
         modifier = Modifier.fillMaxSize(),
         shape = RoundedCornerShape(14.dp),
@@ -671,7 +694,7 @@ private fun PhotoCard(photo: Photo, showName: Boolean) {
     ) {
         Box(Modifier.fillMaxSize()) {
             Image(
-                painter = rememberAsyncImagePainter(photo.uri),
+                painter = painter,
                 contentDescription = photo.displayName,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()

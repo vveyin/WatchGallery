@@ -6,9 +6,23 @@ import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.LabelOff
@@ -17,8 +31,17 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.watchgallery.app.data.CrownMode
@@ -27,10 +50,12 @@ import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.CrashLogger
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlin.math.abs
 
 /**
- * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有居中形变 + 表冠滚动）。
- * 按钮满宽，居中正常大小、边缘缩小淡出（Wear OS 官方 TransformingLazyColumn 风格）；间隔固定。
+ * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有居中放大 + 表冠滚动）。
+ * 居中项放大到 1.14 倍、上下边缘缩到 0.78 并淡出；滚动只改变大小/透明度，不改颜色，
+ * 因此不会被误认为「当前选中」；只有手指按下时才有底色高亮和轻微回缩。
  */
 @Composable
 fun SettingsScreen(
@@ -44,50 +69,63 @@ fun SettingsScreen(
 ) {
     var subPage by remember { mutableStateOf<SubPage>(SubPage.Main) }
     LaunchedEffect(subPage) { onSubPageChanged(subPage == SubPage.Main) }
+    // 一级菜单的滚动位置放在这一层：进二级页再回来时还停在原来的位置
+    val mainListState = rememberLazyListState()
 
-    // 主页直接显示；二级菜单用返回容器包裹，右划回到一级菜单（一级菜单的下滑收抽屉由外层把手处理）。
-    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        when (subPage) {
+    // 一级 ↔ 二级：新页从右侧滑入、旧页稍向左让位并淡出；返回时方向相反。
+    // 背景保持透明：底下是 SettingsDrawer 画的毛玻璃背板。
+    AnimatedContent(
+        targetState = subPage,
+        transitionSpec = {
+            val forward = targetState != SubPage.Main
+            val enter = slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { w ->
+                if (forward) w else -w / 3
+            } + fadeIn(tween(190))
+            val exit = slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { w ->
+                if (forward) -w / 3 else w
+            } + fadeOut(tween(150))
+            enter togetherWith exit
+        },
+        label = "settingsPage"
+    ) { page ->
+        when (page) {
             SubPage.Main -> SettingsMain(
                 viewModel = viewModel,
-                crownEvents = crownEvents,
+                listState = mainListState,
+                crownEvents = if (page == subPage) crownEvents else emptyFlow(),
                 onOpenCrown = { subPage = SubPage.Crown },
                 onOpenTheme = { subPage = SubPage.Theme },
                 onOpenDiag = { subPage = SubPage.Diag },
                 onOpenHidden = { subPage = SubPage.Hidden },
                 onCheckUpdate = onCheckUpdate
             )
-            else -> SwipeBackContainer(
-                onBack = { subPage = SubPage.Main },
-                backContent = {
-                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-                        SettingsMain(
-                            viewModel = viewModel,
-                            crownEvents = emptyFlow(),
-                            onOpenCrown = {},
-                            onOpenTheme = {},
-                            onOpenDiag = {},
-                            onOpenHidden = {},
-                            onCheckUpdate = {}
-                        )
-                    }
-                },
-                content = {
-                    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-                        when (subPage) {
-                            SubPage.Crown -> CrownSettings(
-                                viewModel = viewModel,
-                                crownEvents = crownEvents,
-                                onPrefsChanged = onCrownPrefsChanged
-                            )
-                            SubPage.Theme -> ThemeSettings(viewModel = viewModel, crownEvents = crownEvents)
-                            SubPage.Diag -> ScanDiagSettings(viewModel = viewModel, crownEvents = crownEvents)
-                            SubPage.Hidden -> HiddenFoldersSettings(viewModel = viewModel, crownEvents = crownEvents)
-                            SubPage.Main -> {}
-                        }
-                    }
+            else -> Box(
+                Modifier
+                    .fillMaxSize()
+                    // 圆屏左缘右划返回一级菜单（替代整页跟手容器，避免和转场动画打架）
+                    .edgeBackSwipe { subPage = SubPage.Main }
+            ) {
+                when (page) {
+                    SubPage.Crown -> CrownSettings(
+                        viewModel = viewModel,
+                        crownEvents = if (page == subPage) crownEvents else emptyFlow(),
+                        onPrefsChanged = onCrownPrefsChanged
+                    )
+                    SubPage.Theme -> ThemeSettings(
+                        viewModel = viewModel,
+                        crownEvents = if (page == subPage) crownEvents else emptyFlow()
+                    )
+                    SubPage.Diag -> ScanDiagSettings(
+                        viewModel = viewModel,
+                        crownEvents = if (page == subPage) crownEvents else emptyFlow()
+                    )
+                    SubPage.Hidden -> HiddenFoldersSettings(
+                        viewModel = viewModel,
+                        crownEvents = if (page == subPage) crownEvents else emptyFlow()
+                    )
+                    SubPage.Main -> {}
                 }
-            )
+            }
         }
     }
 }
@@ -104,6 +142,7 @@ private sealed class SubPage {
 @Composable
 private fun SettingsMain(
     viewModel: GalleryViewModel,
+    listState: androidx.compose.foundation.lazy.LazyListState,
     crownEvents: Flow<Float>,
     onOpenCrown: () -> Unit,
     onOpenTheme: () -> Unit,
@@ -117,6 +156,7 @@ private fun SettingsMain(
     val gridColumns by viewModel.gridColumns.collectAsState()
     val showPhotoNames by viewModel.showPhotoNames.collectAsState()
     val showZoomButtons by viewModel.showZoomButtons.collectAsState()
+    val blurBackdrop by viewModel.blurBackdrop.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
     val hiddenFolders by viewModel.hiddenFolders.collectAsState()
     val report by viewModel.scanReport.collectAsState()
@@ -126,7 +166,11 @@ private fun SettingsMain(
         ActivityResultContracts.OpenMultipleDocuments()
     ) { uris -> if (uris.isNotEmpty()) viewModel.importPhotos(uris) }
 
-    ScalingScrollColumn(crownEvents = crownEvents) {
+    ScalingScrollColumn(
+        crownEvents = crownEvents,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        listState = listState
+    ) {
         item(key = "settings_title") {
             Box(Modifier.fillMaxWidth().height(28.dp).settingItem("settings_title", scale = false),
                 contentAlignment = Alignment.Center) {
@@ -189,6 +233,16 @@ private fun SettingsMain(
                 else "关 · 只用双指或表冠缩放",
                 onClick = { viewModel.setShowZoomButtons(!showZoomButtons) },
                 itemKey = "row_zoom"
+            )
+        }
+        item(key = "row_blur") {
+            SettingButton(
+                icon = if (blurBackdrop) Icons.Filled.BlurOn else Icons.Filled.BlurOff,
+                title = "模糊背景",
+                subtitle = if (blurBackdrop) "开 · 抽屉后面是毛玻璃背景"
+                else "关 · 抽屉用纯色背板",
+                onClick = { viewModel.setBlurBackdrop(!blurBackdrop) },
+                itemKey = "row_blur"
             )
         }
         item(key = "row_theme") {
@@ -304,7 +358,7 @@ private fun CrownSettings(
         CrownMode.entries.forEach { m ->
             item(key = "crown_mode_${m.name}") {
                 val mk = "crown_mode_${m.name}"
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().height(52.dp), contentAlignment = Alignment.Center) {
                     OptionButton(
                         selected = mode == m,
                         label = "${m.label} — ${m.description}",
@@ -384,7 +438,7 @@ private fun ThemeSettings(
         options.forEach { (mode, label) ->
             item(key = "theme_${mode.name}") {
                 val mk = "theme_${mode.name}"
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().height(52.dp), contentAlignment = Alignment.Center) {
                     OptionButton(
                         selected = current == mode,
                         label = label,
@@ -411,15 +465,42 @@ private fun SettingButton(
     onClick: () -> Unit,
     itemKey: String
 ) {
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+    // 点击高亮：按下时底色向 primary 偏一点 + 整体轻微回缩。
+    // 滚动时不做任何颜色变化 —— 只有位置形变，不会被误认为「选中」。
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val pressScale by animateFloatAsState(
+        targetValue = if (pressed) 0.955f else 1f,
+        animationSpec = tween(90),
+        label = "settingPress"
+    )
+    val container = if (pressed) {
+        lerp(MaterialTheme.colorScheme.surfaceVariant, MaterialTheme.colorScheme.primary, 0.22f)
+    } else {
+        MaterialTheme.colorScheme.surfaceVariant
+    }
+
+    // 54dp 的「槽位」：按钮本体 46dp，居中放大到 1.12 倍（≈51.5dp）仍待在槽位里，
+    // 因此相邻条目永远不会因为放大而重叠。
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(54.dp)
+            .graphicsLayer {
+                scaleX = pressScale
+                scaleY = pressScale
+            },
+        contentAlignment = Alignment.Center
+    ) {
         Button(
             onClick = onClick,
+            interactionSource = interaction,
             modifier = Modifier
                 .fillMaxWidth()
                 .height(46.dp)
                 .settingItem(itemKey),
             colors = ButtonDefaults.buttonColors(
-                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                containerColor = container,
                 contentColor = MaterialTheme.colorScheme.onSurface
             ),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
@@ -520,7 +601,7 @@ private fun HiddenFoldersSettings(
                 val selfHidden = folder.path in hidden
                 val inherited = !selfHidden && com.watchgallery.app.data.isFolderHidden(folder.path, hidden)
                 val mk = "hidden_${folder.path}"
-                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
                     val isHidden = selfHidden || inherited
                     Button(
                         onClick = { if (!inherited) viewModel.toggleFolderHidden(folder.path) },
@@ -652,15 +733,71 @@ private fun DiagLine(label: String, value: String) {
 }
 
 /**
- * 设置列表条目修饰符 —— 不再做 Wear OS 那种「居中放大、上下边缘缩小淡出」的形变。
+ * 设置列表条目形变 —— 恢复「居中放大」：正中间最大（1.12 倍），越靠近上下边缘越小（0.76）
+ * 并淡出。这是 Wear OS 设置列表的经典层次感。
  *
- * 这个形变在滚动时会让人误以为「当前这条被高亮选中了」，实际上只是位置变换，
- * 和点击选中的状态无关，容易造成误解。设置页统一改成扁平列表：条目尺寸、
- * 透明度恒定，只有内容随表冠/手指滚动。函数保留成空实现，调用处不必改写。
+ * 与旧版「滚动高亮」的区别：形变只动 `scale / alpha`，**不动任何颜色**，
+ * 所以滚到中间不会被误认为「这一条被选中了」；点击时的高亮由 [SettingButton] 自己处理。
  *
- * 相册的文件夹列表仍然使用 [scalingItem]（那是浏览内容的视觉层次，不是"选中"暗示）。
+ * 放大后的溢出量：46dp × 0.12 ≈ 5.5dp，两侧各 2.75dp，小于条目间距（4dp），
+ * 并且都待在 54dp 槽位内，不会互相压住。
  */
-private fun Modifier.settingItem(key: String, scale: Boolean = true): Modifier = this
+@Composable
+private fun Modifier.settingItem(key: String, scale: Boolean = true): Modifier {
+    val density = LocalDensity.current
+    val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val centerY = remember(key) { mutableFloatStateOf(-1f) }
+    val measured = remember(key) { mutableStateOf(false) }
+
+    return this
+        .onGloballyPositioned { coords ->
+            val pos = coords.positionInRoot()
+            centerY.floatValue = pos.y + coords.size.height / 2f
+            measured.value = true
+        }
+        .graphicsLayer {
+            val cy = centerY.floatValue
+            val vc = screenHeightPx / 2f
+            if (measured.value && vc > 0f) {
+                val t = (abs(cy - vc) / (vc * 1.02f)).coerceIn(0f, 1f)
+                if (scale) {
+                    // 居中 1.12 → 边缘 0.76，二次曲线让中间那块更「聚」
+                    val s = 1.12f - 0.36f * (t * t)
+                    scaleX = s
+                    scaleY = s
+                }
+                alpha = 1f - 0.40f * t
+            }
+        }
+}
+
+/**
+ * 圆屏左缘右划返回：从屏幕左侧 26dp 内起手、横向位移超过 56dp 就触发。
+ * 不做跟手位移 —— 转场动画由 [AnimatedContent] 统一负责，避免两套动画叠在一起。
+ */
+private fun Modifier.edgeBackSwipe(onBack: () -> Unit): Modifier = pointerInput(onBack) {
+    val edge = 26.dp.toPx()
+    val threshold = 56.dp.toPx()
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        if (down.position.x > edge) return@awaitEachGesture
+        var dx = 0f
+        var dy = 0f
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            if (event.changes.all { !it.pressed }) break
+            val c = event.changes.firstOrNull { it.id == down.id } ?: break
+            dx += c.position.x - c.previousPosition.x
+            dy += c.position.y - c.previousPosition.y
+            if (abs(dy) > abs(dx) * 1.4f && abs(dy) > threshold) break
+            if (dx > threshold) {
+                c.consume()
+                onBack()
+                break
+            }
+        }
+    }
+}
 
 /** 灵敏度显示：小于 1x 保留两位（0.15x），1x 以上保留一位（2.5x / 10.0x） */
 private fun formatSpeed(speed: Float): String =

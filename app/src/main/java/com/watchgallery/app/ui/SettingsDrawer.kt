@@ -14,7 +14,10 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -24,6 +27,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -36,9 +40,13 @@ import kotlin.math.abs
  * 交互：
  *  - 主界面底部有一条白色半透明细线，从此处上滑 → 抽屉跟手升起，松手吸附展开；
  *  - 设置一级菜单顶部有一条同样的细线，从此处下滑 → 抽屉跟手降下，松手吸附收起；
- *    二级菜单不响应顶部下滑（用右划返回一级菜单）。
+ *    二级菜单不响应顶部下滑（用左缘右划返回一级菜单）。
  *
  * 拖动过程用 snapTo 实时跟手，松手用 tween 动画吸附到展开/收起两态。
+ *
+ * 背景：抽屉背后铺一张静态毛玻璃（[BlurPlate]）。抓图时机是手指按下的那一瞬
+ * （抽屉还在屏幕外，所以拍到的是干净的相册），之后抽屉怎么动、内容怎么滚，
+ * 背景都不重算 —— 与 f-x 的做法一致。
  */
 @Composable
 fun SettingsDrawer(
@@ -46,6 +54,7 @@ fun SettingsDrawer(
     collapsedY: Float,
     canDragDown: Boolean,
     enabled: Boolean,
+    blurEnabled: Boolean,
     onOpened: () -> Unit,
     onClosed: () -> Unit,
     content: @Composable () -> Unit
@@ -56,12 +65,26 @@ fun SettingsDrawer(
     // 吸附阈值：拖动超过 ~44dp 就切换目标态，否则弹回
     val snapPx = with(density) { 44.dp.toPx() }
 
+    val view = LocalView.current
+    val window = remember(view) { view.context.findHostActivity()?.window }
+
+    // 回到相册、抽屉还没图时先做一张，避免第一次上滑时背板是空的。
+    // 延后一点：首帧可能还没画完，太早抓会得到一张空图。
+    LaunchedEffect(enabled, blurEnabled) {
+        if (enabled && blurEnabled && window != null && BlurBackdrop.image == null) {
+            kotlinx.coroutines.delay(600)
+            BlurBackdrop.capture(window)
+        }
+    }
+
     fun settleOpen() {
         onOpened()
         scope.launch { drawerOffset.animateTo(0f, tween(280, easing = FastOutSlowInEasing)) }
     }
     fun settleClose() {
         onClosed()
+        // 收起后底层已经重新露出来，补一张干净的背景给下次用（等抽屉完全移出屏幕）
+        if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 340)
         scope.launch { drawerOffset.animateTo(collapsedY, tween(280, easing = FastOutSlowInEasing)) }
     }
 
@@ -76,6 +99,9 @@ fun SettingsDrawer(
                     .pointerInput(Unit) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
+                            // 按下就先拍一帧：此刻抽屉还在屏幕外，拍到的是干净相册。
+                            // PixelCopy 是异步的，但会在下一帧合成前完成，抽屉那时还没动。
+                            if (blurEnabled && window != null) BlurBackdrop.capture(window)
                             var totalDy = 0f
                             var decided = false
                             var abandoned = false
@@ -111,6 +137,13 @@ fun SettingsDrawer(
                 .fillMaxSize()
                 .graphicsLayer { translationY = drawerOffset.value }
         ) {
+            // ── 毛玻璃背板 ──
+            if (blurEnabled) {
+                BlurPlate(Modifier.fillMaxSize(), dim = 0.55f)
+            } else {
+                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+            }
+
             content()
 
             // 顶部下滑把手：仅设置一级菜单显示，白线在抽屉内容顶部（非屏幕顶部）

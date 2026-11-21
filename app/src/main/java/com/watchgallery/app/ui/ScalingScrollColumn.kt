@@ -36,9 +36,9 @@ fun ScalingScrollColumn(
     crownEvents: Flow<Float>,
     contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 76.dp),
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(6.dp),
+    listState: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
     content: LazyListScope.() -> Unit
 ) {
-    val listState = rememberLazyListState()
 
     // 表冠滚动：照搬 f-x，事件到达直接 scrollBy（不触发 overscroll 回弹）
     CrownScroll(crownEvents) { step ->
