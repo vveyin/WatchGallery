@@ -3,6 +3,9 @@ package com.watchgallery.app.ui
 import android.graphics.Bitmap
 import android.graphics.PointF
 import android.graphics.RectF
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -23,6 +26,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -30,7 +34,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -63,6 +66,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -70,6 +74,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke as DrawStrokeStyle
@@ -79,6 +84,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -93,6 +99,7 @@ import com.watchgallery.app.edit.TextStamp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -205,6 +212,21 @@ fun EditScreen(
         }
     }
 
+    // ── 进入 / 退出动画 ──
+    // 0 = 缩到 0.92 倍且透明，1 = 正常。进入先播一遍，退出（返回 / 保存完成）反向播完再交还导航，
+    // 这样进出编辑页都不会「啪」地硬切。
+    val enterAnim = remember { Animatable(0f) }
+    val animScope = rememberCoroutineScope()
+    LaunchedEffect(Unit) {
+        enterAnim.animateTo(1f, tween(240, easing = FastOutSlowInEasing))
+    }
+    fun closeAnimated() {
+        animScope.launch {
+            enterAnim.animateTo(0f, tween(180, easing = FastOutSlowInEasing))
+            onBack()
+        }
+    }
+
     fun save() {
         val bmp = sourceBitmap ?: return
         saving = true
@@ -216,7 +238,7 @@ fun EditScreen(
             normalizeCrop(cropRect, bmp.width, bmp.height), strokes, stamps
         ) { ok ->
             saving = false
-            if (ok) onBack()
+            if (ok) closeAnimated()
         }
     }
 
@@ -230,6 +252,9 @@ fun EditScreen(
         editingId = null
     }
 
+    /** 本次编辑开始时的文字，用于「取消」还原 */
+    var editOrigin by remember { mutableStateOf("") }
+
     /** 结束当前文本框的输入；内容为空就丢掉，不为空就保留并失焦 */
     fun blurBox() {
         val id = editingId ?: return
@@ -239,7 +264,25 @@ fun EditScreen(
         editingId = null
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    /** 取消这次输入：文字还原成进来时的样子，空文本仍会被丢弃 */
+    fun cancelBoxEdit() {
+        val id = editingId ?: return
+        boxes = boxes.map { if (it.id == id) it.copy(text = editOrigin) else it }
+        blurBox()
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .graphicsLayer {
+                val e = enterAnim.value
+                val s = 0.92f + 0.08f * e
+                scaleX = s
+                scaleY = s
+                alpha = e
+            }
+    ) {
 
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val bmp = preview
@@ -466,6 +509,7 @@ fun EditScreen(
                                             color = if (lum > 0.55f) android.graphics.Color.BLACK
                                             else android.graphics.Color.WHITE
                                         )
+                                        editOrigin = ""
                                         editingId = id
                                     } else {
                                         blurBox()
@@ -511,6 +555,7 @@ fun EditScreen(
                                     .then(
                                         if (tool == EditTool.TEXT) Modifier.clickable {
                                             if (editingId != null && editingId != box.id) blurBox()
+                                            editOrigin = box.text
                                             editingId = box.id
                                         } else Modifier
                                     )
@@ -798,7 +843,7 @@ fun EditScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     OutlinedButton(
-                        onClick = onBack,
+                        onClick = { closeAnimated() },
                         modifier = Modifier.weight(1f).height(38.dp),
                         contentPadding = PaddingValues(horizontal = 6.dp)
                     ) {
@@ -826,64 +871,62 @@ fun EditScreen(
             }
         }
 
-        // ── 文本框输入条：只在编辑某个文本框时出现 ──
+        // ── 文本框输入条：只用系统输入法，界面上只有输入框 + 取消 / 确定 ──
         val editing = boxes.firstOrNull { it.id == editingId }
         if (editing != null) {
+            val boxFocus = remember { FocusRequester() }
+            val keyboard = LocalSoftwareKeyboardController.current
+            LaunchedEffect(editing.id) {
+                delay(100)
+                runCatching { boxFocus.requestFocus() }
+                keyboard?.show()
+            }
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .fillMaxWidth(),
+                    .fillMaxWidth()
+                    .imePadding(),
                 color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
                 shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
             ) {
-                Column(Modifier.padding(horizontal = 8.dp, vertical = 8.dp)) {
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "文本框",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                        Spacer(Modifier.weight(1f))
-                        TextButtonForTool("完成") { blurBox() }
-                    }
-                    Spacer(Modifier.height(4.dp))
-                    // 输入框（也能直接点进来改）
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(30.dp)
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant)
-                            .padding(horizontal = 8.dp),
-                        contentAlignment = Alignment.CenterStart
-                    ) {
-                        BasicTextField(
-                            value = editing.text,
-                            onValueChange = { v ->
-                                boxes = boxes.map { if (it.id == editing.id) it.copy(text = v) else it }
-                            },
-                            textStyle = MaterialTheme.typography.labelMedium.copy(
-                                color = MaterialTheme.colorScheme.onSurface
-                            ),
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                    Spacer(Modifier.height(6.dp))
-                    MiniKeyboard(
-                        onChar = { c ->
-                            boxes = boxes.map {
-                                if (it.id == editing.id) it.copy(text = it.text + c) else it
-                            }
+                Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                    WatchTextField(
+                        value = editing.text,
+                        onValueChange = { v ->
+                            boxes = boxes.map { if (it.id == editing.id) it.copy(text = v) else it }
                         },
-                        onBackspace = {
-                            boxes = boxes.map {
-                                if (it.id == editing.id) it.copy(text = it.text.dropLast(1)) else it
-                            }
+                        focusRequester = boxFocus,
+                        onDone = {
+                            keyboard?.hide()
+                            blurBox()
                         }
                     )
+                    Spacer(Modifier.height(6.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        OutlinedButton(
+                            onClick = {
+                                keyboard?.hide()
+                                cancelBoxEdit()
+                            },
+                            modifier = Modifier.weight(1f).height(34.dp),
+                            contentPadding = PaddingValues(horizontal = 6.dp)
+                        ) {
+                            Text("取消", style = MaterialTheme.typography.labelMedium)
+                        }
+                        Button(
+                            onClick = {
+                                keyboard?.hide()
+                                blurBox()
+                            },
+                            modifier = Modifier.weight(1f).height(34.dp),
+                            contentPadding = PaddingValues(horizontal = 6.dp)
+                        ) {
+                            Text("确定", style = MaterialTheme.typography.labelMedium)
+                        }
+                    }
                 }
             }
         }

@@ -34,7 +34,12 @@ import kotlin.math.abs
 @Composable
 fun ScalingScrollColumn(
     crownEvents: Flow<Float>,
-    contentPadding: PaddingValues = PaddingValues(horizontal = 12.dp, vertical = 76.dp),
+    // 顶部只留 20dp：列表停在顶部时，标题就贴在抽屉那条白线下面
+    // （以前上下都留 76dp，标题被顶到屏幕中上部，白线和标题之间空一大块）。
+    // 底部保留 76dp，最后一条才能滚到屏幕中间。
+    contentPadding: PaddingValues = PaddingValues(
+        start = 12.dp, top = 20.dp, end = 12.dp, bottom = 76.dp
+    ),
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(6.dp),
     listState: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
     content: LazyListScope.() -> Unit

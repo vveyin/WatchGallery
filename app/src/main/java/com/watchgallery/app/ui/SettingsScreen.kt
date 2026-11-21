@@ -12,6 +12,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
@@ -72,19 +73,31 @@ fun SettingsScreen(
     // 一级菜单的滚动位置放在这一层：进二级页再回来时还停在原来的位置
     val mainListState = rememberLazyListState()
 
-    // 一级 ↔ 二级：新页从右侧滑入、旧页稍向左让位并淡出；返回时方向相反。
+    // 一级 ↔ 二级转场。
+    // 进二级：新页从右侧滑入、旧页稍向左让位并淡出。
+    // 返回：**和大图页的退出动画完全一致** —— 当前页整屏向右滑出并淡成半透明，
+    //      下层从 0.90 倍缩放回正、同时淡入（对应 SwipeBackContainer 的那套参数）。
     // 背景保持透明：底下是 SettingsDrawer 画的毛玻璃背板。
     AnimatedContent(
         targetState = subPage,
         transitionSpec = {
             val forward = targetState != SubPage.Main
-            val enter = slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { w ->
-                if (forward) w else -w / 3
-            } + fadeIn(tween(190))
-            val exit = slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { w ->
-                if (forward) -w / 3 else w
-            } + fadeOut(tween(150))
-            enter togetherWith exit
+            if (forward) {
+                val enter = slideInHorizontally(tween(260, easing = FastOutSlowInEasing)) { it } +
+                        fadeIn(tween(190))
+                val exit = slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { -it / 3 } +
+                        fadeOut(tween(150))
+                enter togetherWith exit
+            } else {
+                val enter = scaleIn(
+                    animationSpec = tween(240, easing = FastOutSlowInEasing),
+                    initialScale = 0.90f
+                ) + fadeIn(tween(240)) +
+                        slideInHorizontally(tween(240, easing = FastOutSlowInEasing)) { -it / 20 }
+                val exit = slideOutHorizontally(tween(240, easing = FastOutSlowInEasing)) { it } +
+                        fadeOut(tween(240))
+                enter togetherWith exit
+            }
         },
         label = "settingsPage"
     ) { page ->

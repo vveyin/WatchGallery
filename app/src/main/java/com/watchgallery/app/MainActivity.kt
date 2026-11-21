@@ -334,7 +334,10 @@ private fun AppNavigation(
     @Composable
     fun ScreenLayer(screen: Screen, interactive: Boolean) {
         val layerCrown = if (interactive && !settingsOpen) crownEvents else emptyFlow()
-        val bg = if (screen is Screen.Viewer) Color.Transparent else Color.Black
+        // 大图页、编辑页都透明：它们自己带黑底并随入场动画淡入，
+        // 这样从大图进编辑页能看到图片「浮起来」而不是先黑一下。
+        val bg = if (screen is Screen.Viewer || screen is Screen.Editor) Color.Transparent
+        else Color.Black
         Box(Modifier.fillMaxSize().background(bg)) {
             when (screen) {
                 is Screen.Gallery -> GalleryScreen(

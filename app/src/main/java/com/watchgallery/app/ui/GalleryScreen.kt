@@ -10,6 +10,16 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
@@ -279,13 +289,18 @@ fun GalleryScreen(
             }
         }
 
-        // 多选模式：底部操作栏（覆盖在网格之上）
-        if (selectionMode) {
+        // 多选模式：底部操作栏（覆盖在网格之上）。从屏幕下方滑上来，退出时滑回去
+        AnimatedVisibility(
+            visible = selectionMode,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = slideInVertically(tween(200)) { it } + fadeIn(tween(160)),
+            exit = slideOutVertically(tween(150)) { it } + fadeOut(tween(120))
+        ) {
             SelectionBar(
                 selectedCount = selectedUris.size,
                 onDelete = { viewModel.deleteSelected() },
                 onCancel = { viewModel.exitSelectionMode() },
-                modifier = Modifier.align(Alignment.BottomCenter)
+                modifier = Modifier
             )
         }
     }
@@ -625,7 +640,19 @@ private fun ScalingPhotoList(
                         )
                 ) {
                     PhotoCard(photo, showNames, thumbPainter)
-                    if (selectionMode) {
+                    // 长按进入多选后出现的复选圈：从右上角「弹」出来，不是硬冒出来
+                    AnimatedVisibility(
+                        visible = selectionMode,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(5.dp),
+                        enter = fadeIn(tween(130)) + scaleIn(
+                            initialScale = 0.35f,
+                            animationSpec = spring(dampingRatio = 0.55f, stiffness = 700f)
+                        ),
+                        exit = fadeOut(tween(110)) + scaleOut(
+                            targetScale = 0.35f,
+                            animationSpec = tween(110)
+                        )
+                    ) {
                         SelectionCheck(checked = photo.uri.toString() in selectedUris)
                     }
                 }
@@ -737,13 +764,11 @@ private fun PhotoCard(
     }
 }
 
-/** 照片右上角的复选圈：选中实心对勾，未选中空心圈 */
+/** 照片右上角的复选圈：选中实心对勾，未选中空心圈（位置由调用方的 AnimatedVisibility 给） */
 @Composable
-private fun BoxScope.SelectionCheck(checked: Boolean) {
+private fun SelectionCheck(checked: Boolean) {
     Box(
         modifier = Modifier
-            .align(Alignment.TopEnd)
-            .padding(5.dp)
             .size(22.dp)
             .clip(CircleShape)
             .background(

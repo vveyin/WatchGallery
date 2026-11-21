@@ -33,7 +33,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
@@ -48,7 +47,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.derivedStateOf
@@ -67,6 +65,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -75,11 +74,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
 import coil.compose.AsyncImagePainter
 import coil.compose.rememberAsyncImagePainter
 import coil.request.ImageRequest
@@ -91,9 +90,15 @@ import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlin.math.sqrt
 
-/** 缩放上限（表冠与双指共用） */
-private const val MAX_SCALE = 6f
+/**
+ * 缩放上限（表冠与双指共用）。
+ *
+ * 长图（例如 1080×8000 的截图）按高度铺满后宽度只有几十像素，6 倍还不够看清文字，
+ * 因此放到 8 倍；解码尺寸按档位跟着放大（见 [decodeSize]），倍数越清越细。
+ */
+private const val MAX_SCALE = 8f
 
 /** 抽屉收起时，屏幕底部用于「上滑拉起抽屉」的把手区高度 */
 private val HandleZone = 38.dp
@@ -142,8 +147,15 @@ fun PhotoViewerScreen(
     // 黑底跟着动画一起淡入 —— 动画期间下面那层相册还看得见，等图片铺满屏幕时才彻底变黑，
     // 所以不会再出现「点进去先黑一下」。
     val enter = remember { Animatable(if (origin == null) 1f else 0f) }
+    // 入场动画期间只画「点中的那一张」：不然上下一张会跟着一起被放大，
+    // 视觉上就是「点了这张，怎么上面/下面那张也一起飞进来」。
+    // 用布尔量而不是直接读 enter.value —— 后者会让整棵图片树每帧重组。
+    var entered by remember { mutableStateOf(origin == null) }
     LaunchedEffect(Unit) {
-        if (origin != null) enter.animateTo(1f, tween(300, easing = FastOutSlowInEasing))
+        if (origin != null) {
+            enter.animateTo(1f, tween(300, easing = FastOutSlowInEasing))
+            entered = true
+        }
     }
     var animJob by remember { mutableStateOf<Job?>(null) }
     val scope = rememberCoroutineScope()
@@ -161,6 +173,16 @@ fun PhotoViewerScreen(
     DrawerSettle(drawer)
     // 用 derivedStateOf 而不是直接读 progress：后者会让整个大图页在拖动的每一帧重组
     val drawerOpen by remember { derivedStateOf { drawer.progress.floatValue > 0.5f } }
+    // 缩放档位：只有跨档才重组（否则每一帧缩放都会重算 ImageRequest）
+    val zoomTier by remember {
+        derivedStateOf {
+            when {
+                scale > 4.5f -> 3
+                scale > 2.2f -> 2
+                else -> 1
+            }
+        }
+    }
 
     // 抽屉只要露出一点就不许抓图，否则几帧之后「编辑」按钮就被糊进背景里了
     val drawerVisible by remember { derivedStateOf { drawer.progress.floatValue > 0.002f } }
@@ -252,9 +274,8 @@ fun PhotoViewerScreen(
         // 圆屏上左右两端是弧边，控件宽度按屏宽 0.66 收窄，保证完整可见
         val contentWidth = if (isRound) maxWidth * 0.66f else maxWidth
         val pageH = constraints.maxHeight.toFloat()
-        // 解码尺寸：屏幕的 3 倍（封顶 1600），放大后不会立刻糊成马赛克
-        val decodeW = (constraints.maxWidth * 3).coerceIn(320, 1600)
-        val decodeH = (constraints.maxHeight * 3).coerceIn(320, 1600)
+        val screenWpx = constraints.maxWidth
+        val screenHpx = constraints.maxHeight
 
         // 松手结算：超过阈值就切一张，并把位移补偿一整屏保证画面连续，然后缓动归零
         fun settlePage() {
@@ -316,6 +337,8 @@ fun PhotoViewerScreen(
                     }
             ) {
                 for (d in slots) {
+                    // 入场动画没结束前只挂当前这一张，避免上下一张跟着一起放大
+                    if (!entered && d != 0) continue
                     val p = photos[wrapIndex(index + d, n)]
                     val k = if (keyByUri) p.uri.toString() else "slot$d"
                     key(k) {
@@ -324,15 +347,37 @@ fun PhotoViewerScreen(
                                 .fillMaxSize()
                                 .graphicsLayer { translationY = d * pageH + pageOffset }
                         ) {
+                            // 解码尺寸按「原图长宽比 + 当前缩放档位」算：
+                            // 以前只是把屏幕尺寸乘 3 当方框传进去，长图（比如 1080×8000 的截图）
+                            // 会被压到 180×1350，放大后自然一团糊。
+                            // 当前这张按缩放档位解码；前后各一张固定最低档（翻页时正好接着用，不重新解码）
+                            val tier = if (d == 0) zoomTier else 1
+                            val size = remember(p.uri, p.width, p.height, screenWpx, screenHpx, tier) {
+                                decodeSize(p.width, p.height, screenWpx, screenHpx, tier)
+                            }
                             // GIF 一律按动图解码（查看大图时不看列表那个开关）
                             val bigPainter = rememberAsyncImagePainter(
-                                remember(p.uri, decodeW, decodeH) {
+                                remember(p.uri, size) {
                                     ImageRequest.Builder(context)
                                         .data(p.uri)
-                                        .size(decodeW, decodeH)
+                                        .size(size.first, size.second)
                                         .build()
                                 }
                             )
+                            // 高倍档位解码要几十毫秒：先用低清打底，避免换档时闪一帧空白
+                            val basePainter = if (d == 0 && tier > 1) {
+                                val baseSize = remember(p.uri, p.width, p.height, screenWpx, screenHpx) {
+                                    decodeSize(p.width, p.height, screenWpx, screenHpx, 1)
+                                }
+                                rememberAsyncImagePainter(
+                                    remember(p.uri, baseSize) {
+                                        ImageRequest.Builder(context)
+                                            .data(p.uri)
+                                            .size(baseSize.first, baseSize.second)
+                                            .build()
+                                    }
+                                )
+                            } else null
                             val bigState = bigPainter.state
                             val loaded = bigState is AsyncImagePainter.State.Success
                             val useThumb = d == 0 && !loaded && thumb != null &&
@@ -350,6 +395,21 @@ fun PhotoViewerScreen(
                                     modifier = Modifier.fillMaxSize()
                                 )
                             }
+                            if (basePainter != null && !loaded) {
+                                Image(
+                                    painter = basePainter,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .graphicsLayer {
+                                            scaleX = scale
+                                            scaleY = scale
+                                            translationX = offset.x
+                                            translationY = offset.y
+                                        }
+                                )
+                            }
                             Image(
                                 painter = bigPainter,
                                 contentDescription = p.displayName,
@@ -362,7 +422,8 @@ fun PhotoViewerScreen(
                                         scaleY = if (d == 0) scale else 1f
                                         translationX = if (d == 0) offset.x else 0f
                                         translationY = if (d == 0) offset.y else 0f
-                                        alpha = bigAlpha
+                                        alpha = if (useThumb) bigAlpha
+                                        else if (basePainter != null && !loaded) 0f else 1f
                                     }
                             )
                         }
@@ -469,36 +530,39 @@ fun PhotoViewerScreen(
             }
 
             // ── 收起状态：底部把手，从这里上滑拉起抽屉 ──
-            if (!drawerOpen) {
+            // ⚠️ 这个节点必须**常驻**：以前写成 `if (!drawerOpen)`，手指正拉到一半、
+            // progress 刚过 0.5 时它被移出组合，指针协程随之取消 —— release() 不执行、
+            // dragging 一直是 true，吸附协程直接 return，抽屉就冻在屏幕中间，
+            // 非得再拉一下才继续。现在只用 alpha 隐藏，节点永远在树上。
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(HandleZone)
+                    .graphicsLayer { alpha = (1f - drawer.progress.floatValue).coerceIn(0f, 1f) }
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            // 按下就抓一帧：抽屉还在屏幕外，拍到的是干净的大图
+                            if (blurEnabled && window != null) BlurBackdrop.capture(window)
+                            awaitDrawerDrag(
+                                state = drawer,
+                                down = down,
+                                travelPx = screenH,
+                                slopPx = slopPx
+                            )
+                        }
+                    },
+                contentAlignment = Alignment.BottomCenter
+            ) {
                 Box(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .fillMaxWidth()
-                        .height(HandleZone)
-                        .pointerInput(Unit) {
-                            awaitEachGesture {
-                                val down = awaitFirstDown(requireUnconsumed = false)
-                                // 按下就抓一帧：抽屉还在屏幕外，拍到的是干净的大图
-                                if (blurEnabled && window != null) BlurBackdrop.capture(window)
-                                awaitDrawerDrag(
-                                    state = drawer,
-                                    down = down,
-                                    travelPx = screenH,
-                                    slopPx = slopPx
-                                )
-                            }
-                        },
-                    contentAlignment = Alignment.BottomCenter
-                ) {
-                    Box(
-                        Modifier
-                            .padding(bottom = 10.dp)
-                            .width(44.dp)
-                            .height(3.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.55f))
-                    )
-                }
+                    Modifier
+                        .padding(bottom = 10.dp)
+                        .width(44.dp)
+                        .height(3.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.55f))
+                )
             }
 
             // ── 毛玻璃条：固定在屏幕底部，只露出抽屉盖住的那一条 ──
@@ -642,7 +706,7 @@ fun PhotoViewerScreen(
     }
 }
 
-/** 详细信息弹窗 */
+/** 详细信息弹窗：面板是圆内最大正方形（0.70 × 短边），内容再多也不会被表框切掉 */
 @Composable
 private fun PhotoDetailDialog(photo: Photo, onClose: () -> Unit) {
     val date = remember(photo.dateAdded) {
@@ -657,54 +721,25 @@ private fun PhotoDetailDialog(photo: Photo, onClose: () -> Unit) {
             else -> String.format("%.1f MB", photo.size / 1024f / 1024f)
         }
     }
-    Dialog(onDismissRequest = onClose) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.widthIn(max = 220.dp)
-        ) {
-            Column(Modifier.padding(14.dp)) {
-                Text(
-                    "详细信息",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(Modifier.height(8.dp))
-                DetailLine("名称", photo.displayName)
-                DetailLine("尺寸", if (photo.width > 0) "${photo.width} × ${photo.height}" else "—")
-                DetailLine("大小", sizeText)
-                DetailLine("日期", date)
-                DetailLine("文件夹", photo.folderPath.ifBlank { "根目录" })
-                DetailLine("类型", photo.mimeType)
-                Spacer(Modifier.height(6.dp))
-                TextButton(onClick = onClose, modifier = Modifier.align(Alignment.End)) {
-                    Text("关闭", style = MaterialTheme.typography.labelMedium)
-                }
-            }
-        }
+    WatchDialog(
+        onDismiss = onClose,
+        title = "详细信息",
+        cancelLabel = "关闭",
+        onCancel = onClose
+    ) {
+        DialogLine("名称", photo.displayName)
+        DialogLine("尺寸", if (photo.width > 0) "${photo.width} × ${photo.height}" else "—")
+        DialogLine("大小", sizeText)
+        DialogLine("日期", date)
+        DialogLine("文件夹", photo.folderPath.ifBlank { "根目录" })
+        DialogLine("类型", photo.mimeType)
     }
 }
 
-@Composable
-private fun DetailLine(label: String, value: String) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(46.dp)
-        )
-        Text(
-            value,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis
-        )
-    }
-}
-
-/** 重命名弹窗：输入框 + 手表上的小键盘（不依赖系统输入法） */
+/**
+ * 重命名弹窗：只用输入框 + 取消 / 确定，**输入交给系统输入法**（不再自绘小键盘）。
+ * 弹窗在 `imePadding()` 里居中，键盘弹起时整块面板缩到上方，按钮始终按得到。
+ */
 @Composable
 private fun RenameDialog(
     initial: String,
@@ -712,58 +747,84 @@ private fun RenameDialog(
     onConfirm: (String) -> Unit
 ) {
     var text by remember { mutableStateOf(initial) }
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            shape = RoundedCornerShape(20.dp),
-            color = MaterialTheme.colorScheme.surface,
-            modifier = Modifier.widthIn(max = 230.dp)
-        ) {
-            Column(Modifier.padding(12.dp)) {
-                Text(
-                    "重命名",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurface
-                )
-                Spacer(Modifier.height(6.dp))
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    BasicTextField(
-                        value = text,
-                        onValueChange = { text = it },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.labelMedium.copy(
-                            color = MaterialTheme.colorScheme.onSurface
-                        ),
-                        modifier = Modifier.weight(1f)
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                MiniKeyboard(
-                    onChar = { c -> text += c },
-                    onBackspace = { text = text.dropLast(1) }
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    TextButton(onClick = onDismiss) {
-                        Text("取消", style = MaterialTheme.typography.labelMedium)
-                    }
-                    TextButton(onClick = { onConfirm(text) }, enabled = text.isNotBlank()) {
-                        Text("确定", style = MaterialTheme.typography.labelMedium)
-                    }
-                }
-            }
+    val focus = remember { FocusRequester() }
+    val keyboard = LocalSoftwareKeyboardController.current
+
+    LaunchedEffect(Unit) {
+        delay(120)
+        runCatching { focus.requestFocus() }
+        keyboard?.show()
+    }
+
+    WatchDialog(
+        onDismiss = onDismiss,
+        title = "重命名",
+        cancelLabel = "取消",
+        confirmLabel = "确定",
+        confirmEnabled = text.isNotBlank(),
+        onCancel = {
+            keyboard?.hide()
+            onDismiss()
+        },
+        onConfirm = {
+            keyboard?.hide()
+            onConfirm(text)
         }
+    ) {
+        WatchTextField(
+            value = text,
+            onValueChange = { text = it },
+            focusRequester = focus,
+            onDone = {
+                keyboard?.hide()
+                if (text.isNotBlank()) onConfirm(text)
+            }
+        )
     }
 }
 
 /** 循环取下标（翻页到头会绕回另一端） */
 private fun wrapIndex(i: Int, n: Int): Int = if (n <= 0) 0 else ((i % n) + n) % n
+
+/**
+ * 按「原图长宽比 + 缩放档位」算解码尺寸。
+ *
+ * 以前是把屏幕宽高各乘 3 当作方框交给 Coil，Coil 会等比塞进这个方框 ——
+ * 一张 1080×8000 的长图被压成 180×1350，放大后全是糊的。
+ * 现在按长边目标（1400 / 2400 / 3600）等比缩放，长图能保持 1:7 的比例解出更多细节；
+ * 再用 4MP 的面积上限兜底，方形大图不会一次解出几十 MB。
+ */
+private fun decodeSize(
+    srcW: Int,
+    srcH: Int,
+    screenW: Int,
+    screenH: Int,
+    tier: Int
+): Pair<Int, Int> {
+    val sw = if (srcW > 0) srcW else screenW.coerceAtLeast(1)
+    val sh = if (srcH > 0) srcH else screenH.coerceAtLeast(1)
+    val longTarget = when (tier) {
+        1 -> 1400
+        2 -> 2400
+        else -> 3600
+    }
+    var w = sw
+    var h = sh
+    val longSide = maxOf(sw, sh)
+    if (longSide > longTarget) {
+        val k = longTarget.toFloat() / longSide
+        w = (sw * k).roundToInt().coerceAtLeast(1)
+        h = (sh * k).roundToInt().coerceAtLeast(1)
+    }
+    val area = w.toLong() * h.toLong()
+    val maxArea = 4_000_000L
+    if (area > maxArea) {
+        val k = sqrt(maxArea.toDouble() / area).toFloat()
+        w = (w * k).roundToInt().coerceAtLeast(1)
+        h = (h * k).roundToInt().coerceAtLeast(1)
+    }
+    return w to h
+}
 
 /** 把平移量限制在「放大后超出容器的部分」以内，避免图片被拖出屏幕 */
 private fun clampOffset(o: Offset, scale: Float, size: IntSize): Offset {

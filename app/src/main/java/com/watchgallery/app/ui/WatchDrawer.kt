@@ -53,12 +53,20 @@ class DrawerState(initiallyOpen: Boolean = false) {
 
     val isOpen: Boolean get() = target >= 0.5f
 
-    fun beginDrag() {
+    /**
+     * 开始拖动。返回 false 表示**这一下手势已经被别的节点认领**：
+     * 抽屉面板、底部把手、顶部把手都挂着自己的 `pointerInput`，它们在同一片区域重叠，
+     * 一次按下会被好几个节点同时收到。如果每个都去算位移，抽屉会以两倍速度跑。
+     * 用 `dragging` 当抢占标记，只有第一个认领的生效。
+     */
+    fun beginDrag(): Boolean {
+        if (dragging) return false
         dragging = true
         dragFrom = progress.floatValue
         velocity = 0f
         lastAt = 0L
         lastProgress = dragFrom
+        return true
     }
 
     /** 拖动中每帧调用（fraction 已经换算成 0~1） */
@@ -172,26 +180,33 @@ internal suspend fun AwaitPointerEventScope.awaitDrawerDrag(
     slopPx: Float,
     onClaimed: () -> Unit = {}
 ) {
-    state.beginDrag()
+    if (!state.beginDrag()) return
     var total = 0f
     var claimed = false
-    while (true) {
-        val event = awaitPointerEvent()
-        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-        total += change.position.y - change.previousPosition.y
-        if (!claimed) {
-            if (abs(total) > slopPx) {
-                claimed = true
-                onClaimed()
-            } else {
-                if (!change.pressed) break
-                continue
+    try {
+        while (true) {
+            val event = awaitPointerEvent()
+            val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            total += change.position.y - change.previousPosition.y
+            if (!claimed) {
+                if (abs(total) > slopPx) {
+                    claimed = true
+                    onClaimed()
+                } else {
+                    if (!change.pressed) break
+                    continue
+                }
             }
+            change.consume()
+            // 手指往下 = 抽屉收起（progress 变小）
+            state.dragTo(state.progress.floatValue - (change.position.y - change.previousPosition.y) / travelPx)
+            if (!change.pressed) break
         }
-        change.consume()
-        // 手指往下 = 抽屉收起（progress 变小）
-        state.dragTo(state.progress.floatValue - (change.position.y - change.previousPosition.y) / travelPx)
-        if (!change.pressed) break
+    } finally {
+        // 就算这个指针节点被移除（协程取消）也要把状态收干净：
+        // 否则 `dragging` 永远为 true，吸附协程一直 return，抽屉就冻在半路。
+        if (state.dragging) {
+            if (claimed) state.release() else state.cancelDrag()
+        }
     }
-    if (claimed) state.release() else state.cancelDrag()
 }
