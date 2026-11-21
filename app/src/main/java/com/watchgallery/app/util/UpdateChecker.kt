@@ -1,5 +1,8 @@
 package com.watchgallery.app.util
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
@@ -36,6 +39,19 @@ data class ReleaseInfo(
  * - Release 中第一个 .apk 资源作为下载目标。
  */
 object UpdateChecker {
+
+    /**
+     * 当前是否有可用网络。
+     * 启动时的自动检查先过这一关：没网就什么都不做，也不提示 —— 省掉一次必然失败的请求，
+     * 避免用户在无网环境下开 App 就收到「检查失败」。
+     */
+    fun isOnline(context: Context): Boolean = runCatching {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return@runCatching false
+        val network = cm.activeNetwork ?: return@runCatching false
+        val caps = cm.getNetworkCapabilities(network) ?: return@runCatching false
+        caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }.getOrDefault(false)
 
     suspend fun check(
         giteeOwner: String,
