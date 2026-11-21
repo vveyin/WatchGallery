@@ -558,6 +558,11 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 val name = "WatchGallery_${System.currentTimeMillis()}.png"
                 val uri = ImageSaver.saveToGallery(getApplication(), bmp, name)
                 _message.value = if (uri != null) "已保存到相册" else "保存失败"
+                if (uri != null) {
+                    // 新照片已经写进 MediaStore，重新扫描一次，
+                    // 这样退回列表页时立刻能看到刚保存的这张
+                    refresh()
+                }
                 onDone(uri != null)
             } catch (e: Exception) {
                 _message.value = "保存失败：${e.message}"

@@ -11,6 +11,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -552,6 +554,13 @@ private fun ScalingPhotoList(
                 val leftX = remember { mutableFloatStateOf(0f) }
                 val cellWidth = remember { mutableFloatStateOf(1f) }
                 val measured = remember { mutableStateOf(false) }
+                // 条目浮现缓动：新出现在列表里的条目淡入 + 轻微放大回正（220ms）。
+                // 进列表、翻页加载、从文件夹视图切回来时，照片都是「浮现」出来的
+                // 而不是硬贴上去；uri 不变的条目刷新列表时不重播。
+                val appear = remember(photo.uri.toString()) { Animatable(0f) }
+                LaunchedEffect(photo.uri.toString()) {
+                    appear.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
+                }
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -582,16 +591,22 @@ private fun ScalingPhotoList(
                                 val radius = viewportCenter * 1.05f
                                 val t = (distance / radius).coerceIn(0f, 1f)
                                 val eased = t * t
-                                val sc = 1.10f - 0.32f * eased   // 正中 1.10 → 边缘 0.78
+                                val sc = (1.10f - 0.32f * eased) * (0.88f + 0.12f * appear.value)
                                 scaleX = sc
                                 scaleY = sc
-                                alpha = 1f - 0.55f * t
+                                alpha = (1f - 0.55f * t) * appear.value
                                 // 锚点统一到屏幕水平中线：同排照片围绕同一条竖线缩放，
                                 // 间距随缩放同步变化，视觉上整排连在一起。
                                 transformOrigin = TransformOrigin(
                                     pivotFractionX = ((screenWidthPx / 2f) - leftX.floatValue) / cellWidth.floatValue,
                                     pivotFractionY = 0.5f
                                 )
+                            } else {
+                                // 方屏（不做居中放大）也要有浮现缓动
+                                val a = appear.value
+                                alpha = a
+                                scaleX = 0.88f + 0.12f * a
+                                scaleY = 0.88f + 0.12f * a
                             }
                         }
                         .then(

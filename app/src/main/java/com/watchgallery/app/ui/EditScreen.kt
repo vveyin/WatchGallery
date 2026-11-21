@@ -301,10 +301,9 @@ fun EditScreen(
     // ── 文本框输入抽屉的联动 ──
     val keyboard = LocalSoftwareKeyboardController.current
     DrawerSettle(textDrawer) { open ->
-        if (!open && editingId != null) {
-            keyboard?.hide()
-            blurBox()   // 把抽屉拉下来 = 确定保留
-        }
+        // 抽屉拉下去只是暂时收起：编辑没有结束，文本框保持选中，
+        // 从底部白线还能把它再拉上来继续改；只有点「确定」才算编辑完成。
+        if (!open) keyboard?.hide()
     }
     LaunchedEffect(editingId) {
         if (editingId != null) textDrawer.open() else textDrawer.close()
@@ -725,17 +724,23 @@ fun EditScreen(
         }
 
         // ── 底部拉起热区：常驻组合，只有白线跟着状态显隐 ──
-        val showPullLine by remember { derivedStateOf { drawer.progress.floatValue < 0.002f } }
+        // 编辑文本时这条热区归输入抽屉（划下去还能划上来）；
+        // 点了「确定」结束编辑后，它才重新负责拉起主编辑面板。
+        val showPullLine by remember {
+            derivedStateOf {
+                drawer.progress.floatValue < 0.002f && textDrawer.progress.floatValue < 0.002f
+            }
+        }
         Box(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .fillMaxWidth()
                 .height(46.dp)
-                .pointerInput(Unit) {
+                .pointerInput(editingId) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         awaitDrawerDrag(
-                            state = drawer,
+                            state = if (editingId != null) textDrawer else drawer,
                             down = down,
                             travelPx = screenH,
                             slopPx = 8.dp.toPx()
@@ -781,7 +786,10 @@ fun EditScreen(
                             state = drawer,
                             down = down,
                             travelPx = screenH,
-                            slopPx = 8.dp.toPx()
+                            slopPx = 8.dp.toPx(),
+                            // 工具行 / 选项行横向滚动时已经消费了事件：
+                            // 抽屉让位，不再跟着上下抖
+                            respectConsumed = true
                         )
                     }
                 },
@@ -1013,7 +1021,8 @@ fun EditScreen(
                                 state = textDrawer,
                                 down = down,
                                 travelPx = screenH,
-                                slopPx = 8.dp.toPx()
+                                slopPx = 8.dp.toPx(),
+                                respectConsumed = true
                             )
                         }
                     },
@@ -1054,6 +1063,14 @@ fun EditScreen(
 
                     // ── 文字颜色 ──
                     Spacer(Modifier.height(10.dp))
+                    // 滑动选色的换算步长：一颗圆点 + 间距，手指每滑过这么远换一颗颜色
+                    val colorStep = with(density) { 36.dp.toPx() }
+                    fun pickColor(idx: Int) {
+                        val id = editingId ?: return
+                        boxes = boxes.map {
+                            if (it.id == id) it.copy(color = TextColors[idx.coerceIn(0, TextColors.lastIndex)]) else it
+                        }
+                    }
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
@@ -1064,7 +1081,7 @@ fun EditScreen(
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
-                        TextColors.forEach { c ->
+                        TextColors.forEachIndexed { ci, c ->
                             val picked = editing?.color == c
                             Box(
                                 Modifier
@@ -1077,11 +1094,39 @@ fun EditScreen(
                                         else Color.White.copy(alpha = 0.35f),
                                         shape = CircleShape
                                     )
-                                    .clickable {
-                                        val id = editingId ?: return@clickable
-                                        boxes = boxes.map {
-                                            if (it.id == id) it.copy(color = c) else it
+                                    // 滑动选色：横向起手后跟着手指走，滑过一颗圆点换一颗颜色；
+                                    // 纵向起手不认领，把事件让给抽屉的拖动 / 滚动
+                                    .pointerInput(ci) {
+                                        awaitEachGesture {
+                                            val down = awaitFirstDown(requireUnconsumed = false)
+                                            var totalX = 0f
+                                            var totalY = 0f
+                                            var claimed = false
+                                            val slop = viewConfiguration.touchSlop
+                                            while (true) {
+                                                val ev = awaitPointerEvent()
+                                                val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                                if (!ch.pressed) break
+                                                val dx = ch.position.x - ch.previousPosition.x
+                                                val dy = ch.position.y - ch.previousPosition.y
+                                                totalX += dx
+                                                totalY += dy
+                                                if (!claimed) {
+                                                    if (abs(totalX) > slop && abs(totalX) > abs(totalY)) {
+                                                        claimed = true
+                                                        pickColor(ci)
+                                                    } else if (abs(totalY) > slop) {
+                                                        break   // 纵向手势，让给抽屉
+                                                    }
+                                                    continue
+                                                }
+                                                ch.consume()
+                                                pickColor(ci + (totalX / colorStep).roundToInt())
+                                            }
                                         }
+                                    }
+                                    .clickable {
+                                        pickColor(ci)
                                     }
                             )
                         }

@@ -524,6 +524,9 @@ fun PhotoViewerScreen(
 
                                 while (true) {
                                     val event = awaitPointerEvent()
+                                    // 右划返回已经认领这串指针（事件被上层消费）：
+                                    // 立即停手，不再累计翻页位移，避免返回时顺手切了图
+                                    if (event.changes.firstOrNull()?.isConsumed == true) break
                                     val pressed = event.changes.count { it.pressed }
                                     if (pressed == 0) break
                                     if (pressed > 1) multi = true

@@ -178,7 +178,8 @@ internal suspend fun AwaitPointerEventScope.awaitDrawerDrag(
     down: PointerInputChange,
     travelPx: Float,
     slopPx: Float,
-    onClaimed: () -> Unit = {}
+    onClaimed: () -> Unit = {},
+    respectConsumed: Boolean = false
 ) {
     if (!state.beginDrag()) return
     var total = 0f
@@ -187,6 +188,8 @@ internal suspend fun AwaitPointerEventScope.awaitDrawerDrag(
         while (true) {
             val event = awaitPointerEvent()
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
+            // 认领之前发现事件已被子手势消费（如滑动选色），抽屉让位
+            if (respectConsumed && !claimed && change.isConsumed) break
             total += change.position.y - change.previousPosition.y
             if (!claimed) {
                 if (abs(total) > slopPx) {
