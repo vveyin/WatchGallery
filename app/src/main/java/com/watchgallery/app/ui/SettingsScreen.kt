@@ -50,6 +50,9 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.watchgallery.app.BuildConfig
@@ -64,6 +67,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.sqrt
 
 /**
  * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有表冠滚动）。
@@ -638,111 +642,122 @@ private fun ThemeSettings(
 }
 
 /**
- * 关于页：图标在最上面居中，下面一行行文字。
+ * 关于页 —— 版式照 f-x 仓库的「应用信息」页：
  *
- * 圆屏两头是弧边，正文如果按「整屏居中」排，最下面几行会被切掉；所以内容块用
- * `Arrangement.Center` 垂直居中，再在末尾塞两排空白 —— 等于把整块文字往上推一行半，
- * 每一行都落在圆里能看见的位置。
+ *   · **没有标题**，最上面只有应用图标，下面一列整行胶囊；
+ *   · 每行文字**居中**，应用名单独一档大字号，其余统一 12sp（旧版 9~10sp，在手表上确实偏小）；
+ *   · 行宽按「这一行此刻在屏幕上的高度」取圆内弦长自动收窄 —— 滚到上下弧边时
+ *     胶囊不会顶到表壳被切掉，也不需要靠末尾塞空白把内容顶开；
+ *   · 各行按序号错开淡入上浮（220ms / 每行 +35ms），和 f-x 关于页同一套参数。
+ *
+ * 圆屏收窄只在 [LocalCenterMagnify] 为 true（圆屏）时生效，方屏整屏是直角矩形，
+ * 行宽保持满宽即可。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun AboutPage(crownEvents: Flow<Float>) {
     val context = LocalContext.current
-    val scroll = rememberScrollState()
     var toast by remember { mutableStateOf<String?>(null) }
-    CrownScroll(crownEvents) { scroll.scrollBy(it) }
 
     LaunchedEffect(toast) {
         if (toast != null) {
-            delay(1500)
+            delay(1600)
             toast = null
         }
     }
 
+    // 入场总开关：进这一屏后置 true，各行按序号错开浮起
+    var entered by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { entered = true }
+
     val linkColor = Color(0xFF4FA3FF)
 
     Box(Modifier.fillMaxSize()) {
-        BoxWithConstraints(Modifier.fillMaxSize()) {
-            val minH = maxHeight
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .verticalScroll(scroll)
-                    .heightIn(min = minH)
-                    .padding(horizontal = 16.dp),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                // 应用图标：自适应图标的前景 + 背景两层叠起来，和桌面上的图标一致
-                Box(
-                    Modifier
-                        .size(46.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                ) {
-                    Image(
-                        painter = painterResource(R.mipmap.ic_launcher_background),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                    Image(
-                        painter = painterResource(R.mipmap.ic_launcher_foreground),
-                        contentDescription = null,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
+        ScalingScrollColumn(
+            crownEvents = crownEvents,
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+            contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 80.dp)
+        ) {
+            // 序号在构建期算好（content lambda 会重组，不能在里面 ++）
+            var i = 0
+            val iconIdx = i++
+            val nameIdx = i++
+            val tagIdx = i++
+            val introIdx = i++
+            val verIdx = i++
+            val codeIdx = i++
+            val devIdx = i++
+            val socIdx = i++
+            val urlIdx = i++
 
-                Spacer(Modifier.height(5.dp))
-                Text(
-                    "相册",
-                    style = MaterialTheme.typography.labelLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onBackground
+            item(key = "about_icon") {
+                AboutIcon(entered = entered, index = iconIdx)
+            }
+            item(key = "about_name") {
+                AboutName("相册", entered = entered, index = nameIdx)
+            }
+            item(key = "about_tagline") {
+                AboutTagline("手表上的随身相册 · 由春羽开发", entered = entered, index = tagIdx)
+            }
+            item(key = "about_intro") {
+                AboutPill(
+                    text = "原图浏览 · 表冠缩放 · 旋转裁剪 · 多选整理\n一块表，装下你舍不得删的每一张",
+                    entered = entered,
+                    index = introIdx,
+                    minHeight = 46.dp,
+                    maxLines = 3,
+                    lineHeight = 17.sp
                 )
-                Spacer(Modifier.height(1.dp))
-                Text(
-                    "手表本地相册 · 由春羽开发",
-                    fontSize = 9.sp,
-                    lineHeight = 11.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    textAlign = TextAlign.Center
+            }
+            item(key = "about_version") {
+                AboutPill(
+                    text = "版本 ${BuildConfig.VERSION_NAME}",
+                    entered = entered,
+                    index = verIdx
                 )
-
-                Spacer(Modifier.height(6.dp))
-                AboutLine("应用版本", BuildConfig.VERSION_NAME)
-                AboutLine("Version Code", BuildConfig.VERSION_CODE.toString())
-                AboutLine("开发者名称", "春羽")
-
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    "0o0社区@春羽",
-                    fontSize = 10.sp,
+            }
+            item(key = "about_code") {
+                AboutPill(
+                    text = "Version Code ${BuildConfig.VERSION_CODE}",
+                    entered = entered,
+                    index = codeIdx
+                )
+            }
+            // 「空一排」：一个整行的视觉间隔（f-x 里也是一项，不是 spacing 特例）
+            item(key = "about_gap") { Spacer(Modifier.height(12.dp)) }
+            item(key = "about_dev") {
+                AboutPill(
+                    text = "开发者 春羽",
+                    entered = entered,
+                    index = devIdx,
                     color = MaterialTheme.colorScheme.onSurface
                 )
-                Spacer(Modifier.height(2.dp))
-                // 网址：蓝字，点击用浏览器打开，长按复制并弹应用内提示
-                Text(
-                    "0o0.site",
-                    fontSize = 11.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = linkColor,
-                    modifier = Modifier
-                        .combinedClickable(
-                            onClick = { openUrl(context, "https://0o0.site") },
-                            onLongClick = {
-                                val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                cm.setPrimaryClip(ClipData.newPlainText("0o0.site", "0o0.site"))
-                                toast = "已复制网址"
-                            }
-                        )
-                        .padding(horizontal = 10.dp, vertical = 3.dp)
-                )
-
-                // 末尾两排空白（每排 13dp）：把上面这整块文字往上顶，
-                // 让最后一行落在圆屏可见的位置，不被表盘下沿的弧边切掉
-                Spacer(Modifier.height(26.dp))
             }
+            item(key = "about_social") {
+                AboutPill(
+                    text = "0o0社区@春羽",
+                    entered = entered,
+                    index = socIdx,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            // 网址：蓝字，点击用浏览器打开，长按复制并弹应用内提示（系统 Toast 在圆屏会被裁）
+            item(key = "about_url") {
+                AboutPill(
+                    text = "0o0.site",
+                    entered = entered,
+                    index = urlIdx,
+                    color = linkColor,
+                    fontWeight = FontWeight.SemiBold,
+                    onClick = { openUrl(context, "https://0o0.site") },
+                    onLongClick = {
+                        val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        cm.setPrimaryClip(ClipData.newPlainText("0o0.site", "0o0.site"))
+                        toast = "已复制网址"
+                    }
+                )
+            }
+            item(key = "about_tail") { Spacer(Modifier.height(24.dp)) }
         }
 
         // 应用内 toast（不用系统 Toast：手表上系统 Toast 会被圆角裁掉）
@@ -753,25 +768,198 @@ private fun AboutPage(crownEvents: Flow<Float>) {
     }
 }
 
+/** 各行入场：淡入 + 从下方浮起 10dp，按序号错开（f-x 关于页同一套参数） */
 @Composable
-private fun AboutLine(label: String, value: String) {
-    Row(
-        Modifier.padding(vertical = 1.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
+private fun enterReveal(entered: Boolean, index: Int): Float {
+    val reveal by animateFloatAsState(
+        targetValue = if (entered) 1f else 0f,
+        animationSpec = tween(
+            durationMillis = 220,
+            delayMillis = index * 35,
+            easing = FastOutSlowInEasing
+        ),
+        label = "aboutReveal"
+    )
+    return reveal
+}
+
+/** 图标那一行：只有图标、没有胶囊底（它是这一屏的门面，不是一条信息） */
+@Composable
+private fun AboutIcon(entered: Boolean, index: Int) {
+    val reveal = enterReveal(entered, index)
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .height(62.dp)
+            .graphicsLayer {
+                alpha = reveal
+                translationY = (1f - reveal) * 10f
+            },
+        contentAlignment = Alignment.Center
     ) {
-        Text(
-            label,
-            fontSize = 9.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Spacer(Modifier.width(5.dp))
-        Text(
-            value,
-            fontSize = 10.sp,
-            color = MaterialTheme.colorScheme.onSurface
-        )
+        Box(
+            Modifier
+                .size(56.dp)
+                .clip(RoundedCornerShape(17.dp))
+        ) {
+            // 自适应图标的前景 + 背景两层叠合，和桌面上那颗图标一致
+            Image(
+                painter = painterResource(R.mipmap.ic_launcher_background),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+            Image(
+                painter = painterResource(R.mipmap.ic_launcher_foreground),
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize()
+            )
+        }
     }
+}
+
+/** 应用名：这一屏唯一的大字号（20sp），纯色前景 */
+@Composable
+private fun AboutName(text: String, entered: Boolean, index: Int) {
+    val reveal = enterReveal(entered, index)
+    Text(
+        text,
+        fontSize = 20.sp,
+        lineHeight = 24.sp,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onBackground,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = reveal
+                translationY = (1f - reveal) * 10f
+            }
+    )
+}
+
+/** 一句话定位：名字下面那行小字（11sp，次要色） */
+@Composable
+private fun AboutTagline(text: String, entered: Boolean, index: Int) {
+    val reveal = enterReveal(entered, index)
+    Text(
+        text,
+        fontSize = 11.sp,
+        lineHeight = 14.sp,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        textAlign = TextAlign.Center,
+        modifier = Modifier
+            .fillMaxWidth()
+            .graphicsLayer {
+                alpha = reveal
+                translationY = (1f - reveal) * 10f
+            }
+    )
+}
+
+/**
+ * 一条信息：整行胶囊 + 居中文字。视觉语言与设置页的条目、f-x 的「应用信息」行一致。
+ *
+ * @param minHeight 一行的高度；介绍那条传 46dp 让两行文字不贴边
+ * @param maxLines 介绍行允许 3 行；其余都是 1 行
+ * @param onClick / onLongClick 只有网址那行挂得上，其余传 null（连手势节点都不建）
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun AboutPill(
+    text: String,
+    entered: Boolean,
+    index: Int,
+    color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
+    fontSize: TextUnit = 12.sp,
+    lineHeight: TextUnit = 15.sp,
+    minHeight: Dp = 32.dp,
+    maxLines: Int = 1,
+    fontWeight: FontWeight = FontWeight.Normal,
+    onClick: (() -> Unit)? = null,
+    onLongClick: (() -> Unit)? = null
+) {
+    val reveal = enterReveal(entered, index)
+    Surface(
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(50),
+        modifier = Modifier
+            // 先按圆屏弦长收窄，再 fillMaxWidth —— 胶囊的实际宽度就是「屏宽 − 两侧留白」
+            .arcWidthPadding()
+            .fillMaxWidth()
+            .heightIn(min = minHeight)
+            .graphicsLayer {
+                alpha = reveal
+                translationY = (1f - reveal) * 10f
+            }
+            .then(
+                if (onClick != null || onLongClick != null) {
+                    Modifier.combinedClickable(
+                        onClick = { onClick?.invoke() },
+                        onLongClick = onLongClick
+                    )
+                } else {
+                    Modifier
+                }
+            )
+    ) {
+        // 内层也写 heightIn(min)：Surface 的内容默认顶对齐，只给外层 minHeight 会让
+        // 文字整体偏上 3dp；这里让盒子自己撑到同一高度，再靠 contentAlignment 居中。
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(min = minHeight)
+                .padding(horizontal = 12.dp, vertical = 5.dp),
+            contentAlignment = Alignment.Center
+        ) {
+            Text(
+                text = text,
+                fontSize = fontSize,
+                lineHeight = lineHeight,
+                fontWeight = fontWeight,
+                color = color,
+                textAlign = TextAlign.Center,
+                maxLines = maxLines,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+/**
+ * 圆屏上按「这一行此刻的高度」把行宽收窄到圆内弦长，方屏原样返回。
+ *
+ * 圆心取屏幕中心，半径取短边的一半；行中心离屏幕中心越远，弦越短 ——
+ * 滚到上下边缘时胶囊跟着变窄，两个角不会伸到表壳外面。
+ * 留 0.90 的余量，再夹一个最小宽度（0.5 屏宽），避免极端位置把字挤没。
+ *
+ * 位置回调每帧都会来，这里把结果量化到 1dp，只有真的变了才写回 state，
+ * 否则滚动时会因为「1px 级抖动」反复重组。
+ */
+@Composable
+private fun Modifier.arcWidthPadding(): Modifier {
+    if (!LocalCenterMagnify.current) return this
+    val density = LocalDensity.current
+    val configuration = LocalConfiguration.current
+    val wPx = with(density) { configuration.screenWidthDp.dp.toPx() }
+    val hPx = with(density) { configuration.screenHeightDp.dp.toPx() }
+    if (wPx <= 0f || hPx <= 0f) return this
+    val padDp = remember { mutableFloatStateOf(0f) }
+
+    return this
+        .onGloballyPositioned { coords ->
+            val centerY = coords.positionInRoot().y + coords.size.height / 2f
+            val r = minOf(wPx, hPx) / 2f
+            val dy = abs(centerY - hPx / 2f)
+            val half = if (dy >= r) 0f else sqrt((r * r - dy * dy).coerceAtLeast(0f))
+            val usable = (half * 2f * 0.90f)
+                .coerceAtLeast(wPx * 0.50f)
+                .coerceAtMost(wPx)
+            val next = with(density) { ((wPx - usable) / 2f).toDp() }.value
+            if (abs(next - padDp.floatValue) >= 1f) padDp.floatValue = next
+        }
+        .padding(horizontal = padDp.floatValue.dp)
 }
 
 private fun openUrl(context: Context, url: String) {
