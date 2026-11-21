@@ -17,7 +17,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -29,6 +28,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -63,6 +63,7 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 
 /**
@@ -100,6 +101,7 @@ fun GalleryScreen(
     val visibleCount by viewModel.visibleCount.collectAsState()
     val totalCount by viewModel.totalCountFlow.collectAsState()
     val gridColumns by viewModel.gridColumns.collectAsState()
+    val showPhotoNames by viewModel.showPhotoNames.collectAsState()
     val selectionMode by viewModel.selectionMode.collectAsState()
     val selectedUris by viewModel.selectedUris.collectAsState()
 
@@ -188,6 +190,7 @@ fun GalleryScreen(
                 items = photos,
                 columns = gridColumns,
                 crownEvents = crownEvents,
+                showNames = showPhotoNames,
                 hasMore = visibleCount < totalCount,
                 totalCount = totalCount,
                 selectionMode = selectionMode,
@@ -229,6 +232,7 @@ private fun ScalingPhotoList(
     items: List<Photo>,
     columns: Int,
     crownEvents: Flow<Float>,
+    showNames: Boolean,
     hasMore: Boolean,
     totalCount: Int,
     selectionMode: Boolean,
@@ -260,6 +264,25 @@ private fun ScalingPhotoList(
 
     // 每张照片的屏幕矩形（px），供滑动刷选判定命中用。key = uri 字符串。
     val cellRects = remember { mutableMapOf<String, Rect>() }
+
+    // 手势开始时读取最新的多选状态。不能拿它当 pointerInput 的 key —— 长按进入多选后
+    // 状态翻转会让手势协程重启，后续拖动就收不到了。
+    val selectionModeState = rememberUpdatedState(selectionMode)
+
+    // 起点→当前点的矩形覆盖到的照片全部加入选中。
+    // 四周加 3px，保证纯横向/纵向划动（矩形某一边为 0）也能命中最外一行/列。
+    fun selectInRect(a: Offset, b: Offset) {
+        val pad = 3f
+        val r = Rect(
+            left = minOf(a.x, b.x) - pad,
+            top = minOf(a.y, b.y) - pad,
+            right = maxOf(a.x, b.x) + pad,
+            bottom = maxOf(a.y, b.y) + pad
+        )
+        val hits = HashSet<String>()
+        for ((uri, cell) in cellRects) if (cell.overlaps(r)) hits.add(uri)
+        if (hits.isNotEmpty()) onSelectRange(hits)
+    }
 
     // 表冠滚动：照搬 f-x，事件到达直接 scrollBy，即时跟手、无阻尼。
     // 关键：必须调用 LazyGridState.scrollBy（内部按像素即时滚动、不触发 overscroll 弹簧），
@@ -295,7 +318,9 @@ private fun ScalingPhotoList(
             userScrollEnabled = !selectionMode,
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = edgePad),
             verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
+            // 横向间隔取原来的一半（8dp → 4dp）：列宽随之变宽、照片变大，
+            // 而左右 contentPadding 不变，所以整排的外沿位置保持原样。
+            horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
             items(items, key = { it.uri.toString() }) { photo ->
                 // 滚出屏幕被回收时清掉矩形，避免复制剩余项里残留旧坐标、划选误中屏幕外的照片
@@ -351,16 +376,56 @@ private fun ScalingPhotoList(
                             }
                         }
                         .then(
-                            if (selectionMode) Modifier
-                            else Modifier.pointerInput(photo.uri.toString()) {
-                                detectTapGestures(
-                                    onLongPress = { onLongPress(photo.uri.toString()) },
-                                    onTap = { onPhotoClick(photo) }
-                                )
+                            Modifier.pointerInput(photo.uri.toString()) {
+                                // 单击 / 长按 / 长按后继续拖动，全部在这一次手势里处理。
+                                // 长按成立后不松手直接滑动，横向纵向都做矩形选取（手机相册行为）。
+                                awaitEachGesture {
+                                    // 已经在多选模式：交给上层的覆盖层统一处理
+                                    if (selectionModeState.value) return@awaitEachGesture
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    val slop = viewConfiguration.touchSlop
+
+                                    // 长按超时前观察：抬起 = 单击；移动超过 slop = 交给网格滚动
+                                    val held = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
+                                        var done = false
+                                        var still = true
+                                        while (!done) {
+                                            val e = awaitPointerEvent(PointerEventPass.Initial)
+                                            val c = e.changes.firstOrNull { it.id == down.id }
+                                            if (c == null || !c.pressed) {
+                                                still = true; done = true
+                                            } else if ((c.position - down.position).getDistance() > slop) {
+                                                still = false; done = true
+                                            }
+                                        }
+                                        still
+                                    }
+
+                                    when (held) {
+                                        // null = 超时未抬起 → 长按成立
+                                        null -> {
+                                            down.consume()
+                                            onLongPress(photo.uri.toString())
+                                            val anchor = down.position
+                                            while (true) {
+                                                val e = awaitPointerEvent(PointerEventPass.Initial)
+                                                val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                                                c.consume()
+                                                if (!c.pressed) break
+                                                selectInRect(anchor, c.position)
+                                            }
+                                        }
+                                        true -> {
+                                            down.consume()
+                                            onPhotoClick(photo)
+                                        }
+                                        else -> Unit  // 已开始滚动，什么都不做
+                                    }
+                                }
                             }
                         )
                 ) {
-                    PhotoCard(photo)
+                    PhotoCard(photo, showNames)
                     if (selectionMode) {
                         SelectionCheck(checked = photo.uri.toString() in selectedUris)
                     }
@@ -404,23 +469,6 @@ private fun ScalingPhotoList(
                             var mode = 0
                             var tapped = true
 
-                            // 起点→当前位置的矩形覆盖到的照片全部加入选中。
-                            // 四周加 3px，保证纯横向/纵向划动（矩形某一边为 0）也能命中最外一行/列。
-                            fun selectRect(cur: Offset) {
-                                val pad = 3f
-                                val dragRect = Rect(
-                                    left = minOf(anchor.x, cur.x) - pad,
-                                    top = minOf(anchor.y, cur.y) - pad,
-                                    right = maxOf(anchor.x, cur.x) + pad,
-                                    bottom = maxOf(anchor.y, cur.y) + pad
-                                )
-                                val hitUris = HashSet<String>()
-                                for ((uri, r) in cellRects) {
-                                    if (r.overlaps(dragRect)) hitUris.add(uri)
-                                }
-                                if (hitUris.isNotEmpty()) onSelectRange(hitUris)
-                            }
-
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Initial)
                                 if (event.changes.all { !it.pressed }) break
@@ -440,7 +488,7 @@ private fun ScalingPhotoList(
                                             // 补上判定前已移动的纵向距离，起手不丢位移
                                             selectionScroll.tryEmit(-(cur.y - anchor.y))
                                         } else {
-                                            selectRect(cur)
+                                            selectInRect(anchor, cur)
                                         }
                                     }
                                 } else if (mode == 1) {
@@ -448,7 +496,7 @@ private fun ScalingPhotoList(
                                     selectionScroll.tryEmit(-(cur.y - last.y))
                                 } else {
                                     // 横向：选取；不松手继续纵向滑动也只是扩大矩形范围
-                                    selectRect(cur)
+                                    selectInRect(anchor, cur)
                                 }
                                 last = cur
                             }
@@ -464,7 +512,7 @@ private fun ScalingPhotoList(
 }
 
 @Composable
-private fun PhotoCard(photo: Photo) {
+private fun PhotoCard(photo: Photo, showName: Boolean) {
     Card(
         modifier = Modifier.fillMaxSize(),
         shape = RoundedCornerShape(14.dp),
@@ -479,21 +527,24 @@ private fun PhotoCard(photo: Photo) {
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize()
             )
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .height(26.dp)
-                    .background(Color.Black.copy(alpha = 0.55f)),
-                contentAlignment = Alignment.CenterStart
-            ) {
-                Text(
-                    photo.displayName,
-                    color = Color.White,
-                    fontSize = 10.sp,
-                    maxLines = 1,
-                    modifier = Modifier.padding(horizontal = 8.dp)
-                )
+            // 文件名条：设置里关闭「显示图片名」后整条不渲染，照片占满整个卡片
+            if (showName) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .fillMaxWidth()
+                        .height(26.dp)
+                        .background(Color.Black.copy(alpha = 0.55f)),
+                    contentAlignment = Alignment.CenterStart
+                ) {
+                    Text(
+                        photo.displayName,
+                        color = Color.White,
+                        fontSize = 10.sp,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                }
             }
         }
     }
@@ -551,22 +602,28 @@ private fun SelectionBar(
     ) {
         Text("已选 $selectedCount 张", fontSize = 11.sp,
             color = MaterialTheme.colorScheme.onSurface)
-        Button(
+        // 删除：只留垃圾桶图标
+        IconButton(
             onClick = onDelete,
             enabled = selectedCount > 0,
-            modifier = Modifier.height(30.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+            modifier = Modifier.size(32.dp)
         ) {
-            Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(14.dp))
-            Spacer(Modifier.width(4.dp))
-            Text("删除", fontSize = 11.sp)
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = "删除",
+                tint = if (selectedCount > 0) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                modifier = Modifier.size(19.dp)
+            )
         }
-        OutlinedButton(
-            onClick = onCancel,
-            modifier = Modifier.height(30.dp),
-            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
-        ) {
-            Text("取消", fontSize = 11.sp)
+        // 取消：标准返回箭头
+        IconButton(onClick = onCancel, modifier = Modifier.size(32.dp)) {
+            Icon(
+                Icons.AutoMirrored.Filled.ArrowBack,
+                contentDescription = "返回",
+                tint = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.size(19.dp)
+            )
         }
     }
 }
