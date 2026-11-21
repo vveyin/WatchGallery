@@ -4,6 +4,8 @@
 
     <!-- 检查更新与下载 APK -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 启动时先判断是否联网；没网就直接静默跳过更新检测 -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- 安装下载的 APK（Android 里需要在设置里允许本应用安装未知应用） -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
