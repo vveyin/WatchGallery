@@ -3,6 +3,7 @@ package com.watchgallery.app.ui
 import android.os.SystemClock
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -15,12 +16,12 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
@@ -39,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
@@ -77,15 +79,22 @@ private val DrawerHeight = 54.dp
 /** 抽屉收起时，屏幕底部用于「上滑拉起抽屉」的把手区高度 */
 private val HandleZone = 38.dp
 
+/** 翻页触发比例：拖动超过屏高的这个比例就切到相邻一张 */
+private const val PAGE_THRESHOLD = 0.16f
+
 /**
  * 大图查看器。
  *
  * 交互（对标手机相册在手表上的简化版）：
- *  - 上下滑动切换上一张 / 下一张；图片处于放大状态时上下滑动改为平移图片，不切图；
- *  - 双指缩放只改变大小，不再旋转图片（旋转会让图片歪斜，已被移除）；
- *  - 双击复位、单击显示图片信息；
- *  - 底部不再放常驻按钮，改为只容纳「编辑」的高度受限抽屉：底部上滑拉起，下滑或点空白处收起；
- *  - 表冠缩放。
+ *  - 上下滑动跟手翻页（上滑下一张、下滑上一张），松手按位移吸附到位，带缓动动画；
+ *  - 图片放大时禁止翻页，上下滑动改为平移图片；
+ *  - 双指缩放只改变大小，不改变方向；双击复位、单击显示图片信息、表冠缩放；
+ *  - 底部不再放常驻按钮，改为只容纳「编辑」的高度受限抽屉。
+ *
+ * 性能：
+ *  - 相邻照片常驻渲染树（不是切图时才加载），切图只是位移，Bitmap 早已解码完成，因此不卡；
+ *  - 拖动时再多挂一张「下下张 / 上上张」，让快速连滑也有图可切；
+ *  - 层的 key 用图片 uri，切图时相邻照片的 Image 组合会被复用，不会重新发起请求。
  */
 @Composable
 fun PhotoViewerScreen(
@@ -102,6 +111,11 @@ fun PhotoViewerScreen(
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var showInfo by remember { mutableStateOf(false) }
+
+    // 翻页位移：0 表示正好停在第 index 张，负值表示画面向上偏移（正在翻向下一张）
+    var pageOffset by remember { mutableFloatStateOf(0f) }
+    var dragging by remember { mutableStateOf(false) }
+    var animJob by remember { mutableStateOf<Job?>(null) }
 
     val density = LocalDensity.current
     val drawerPx = with(density) { DrawerHeight.toPx() }
@@ -154,15 +168,6 @@ fun PhotoViewerScreen(
         }
     }
 
-    // 切图：手势协程里要拿到最新的 photos / index，所以用 rememberUpdatedState 包一层
-    val stepRef = rememberUpdatedState<(Int) -> Unit>({ delta ->
-        val n = photos.size
-        if (n > 1) {
-            index = ((index + delta) % n + n) % n
-            scale = 1f
-            offset = Offset.Zero
-        }
-    })
     val tapRef = rememberUpdatedState<() -> Unit>({ handleTap() })
 
     // 表冠缩放：逐条消费增量，避免累加值导致缩放失控
@@ -183,78 +188,126 @@ fun PhotoViewerScreen(
     ) {
         // 圆屏上左右两端是弧边，控件宽度按屏宽 0.66 收窄，保证完整可见
         val contentWidth = if (isRound) maxWidth * 0.66f else maxWidth
+        val pageH = constraints.maxHeight.toFloat()
+
+        // 松手结算：超过阈值就切一张，并把位移补偿一整屏保证画面连续，然后缓动归零
+        fun settlePage() {
+            val threshold = pageH * PAGE_THRESHOLD
+            val n = photos.size
+            var delta = 0
+            if (pageOffset <= -threshold) delta = 1
+            else if (pageOffset >= threshold) delta = -1
+            if (delta != 0 && n > 1) {
+                index = wrapIndex(index + delta, n)
+                pageOffset += delta * pageH
+                scale = 1f
+                offset = Offset.Zero
+            }
+            animJob?.cancel()
+            animJob = scope.launch {
+                animate(
+                    initialValue = pageOffset,
+                    targetValue = 0f,
+                    animationSpec = tween(220, easing = FastOutSlowInEasing)
+                ) { value, _ -> pageOffset = value }
+            }
+        }
+        val settleRef = rememberUpdatedState<() -> Unit>({ settlePage() })
 
         if (photo == null) {
             Text("图片不存在", color = Color.White, modifier = Modifier.align(Alignment.Center))
         } else {
-            Image(
-                painter = rememberAsyncImagePainter(photo.uri),
-                contentDescription = photo.displayName,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier
-                    .fillMaxSize()
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offset.x
-                        translationY = offset.y
-                        // 旋转已被移除：缩放只改变大小，不改变方向
+            val n = photos.size
+            // 平时只挂前后各一张；手指按住拖动时再多挂一张，保证快速连滑也有已解码的图
+            val range = if (dragging && n >= 5) 2 else 1
+            // 张数够多时用 uri 作 key，切图时相邻照片的 Image 组合会被原样复用（Bitmap 不重新解码）
+            val keyByUri = n >= 3
+            // 当前这张排在最前：入队顺序靠前，加载优先级更高，进页面时先出图
+            val slots = if (range >= 2) intArrayOf(0, -1, 1, -2, 2) else intArrayOf(0, -1, 1)
+
+            for (d in slots) {
+                val p = photos[wrapIndex(index + d, n)]
+                val k = if (keyByUri) p.uri.toString() else "slot$d"
+                key(k) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .graphicsLayer { translationY = d * pageH + pageOffset }
+                    ) {
+                        Image(
+                            painter = rememberAsyncImagePainter(p.uri),
+                            contentDescription = p.displayName,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    // 只有当前这张参与缩放/平移；其余两张保持原始大小，仅做位移
+                                    scaleX = if (d == 0) scale else 1f
+                                    scaleY = if (d == 0) scale else 1f
+                                    translationX = if (d == 0) offset.x else 0f
+                                    translationY = if (d == 0) offset.y else 0f
+                                }
+                        )
                     }
-                    .then(
-                        if (drawerOpen) {
-                            // 抽屉展开时图片不接受任何手势，点面板外区域由遮罩负责收起
-                            Modifier
-                        } else {
-                            Modifier.pointerInput(Unit) {
-                                awaitEachGesture {
-                                    val down = awaitFirstDown(requireUnconsumed = false)
-                                    // 底部把手区留给抽屉用，这里不碰
-                                    if (down.position.y > size.height - handlePx) {
-                                        return@awaitEachGesture
-                                    }
-                                    var last = down.position
-                                    var travel = 0f
-                                    var accY = 0f
-                                    var pageLocked = false
-                                    var multi = false
-                                    var everZoomed = false
-                                    val touchSlop = viewConfiguration.touchSlop
-                                    val pageStep = 44.dp.toPx()
+                }
+            }
 
-                                    while (true) {
-                                        val event = awaitPointerEvent()
-                                        val pressed = event.changes.count { it.pressed }
-                                        if (pressed == 0) break
-                                        if (pressed > 1) multi = true
+            // ── 手势层：翻页 / 缩放 / 平移 / 点按 ──
+            if (!drawerOpen) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                val down = awaitFirstDown(requireUnconsumed = false)
+                                // 底部把手区留给抽屉用
+                                if (down.position.y > size.height - handlePx) {
+                                    return@awaitEachGesture
+                                }
+                                animJob?.cancel()
+                                dragging = true
+                                var last = down.position
+                                var travel = 0f
+                                var multi = false
+                                var everZoomed = false
+                                val touchSlop = viewConfiguration.touchSlop
+                                val pageHeight = size.height.toFloat()
 
-                                        val zoom = event.calculateZoom()
-                                        val pan = event.calculatePan()
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    val pressed = event.changes.count { it.pressed }
+                                    if (pressed == 0) break
+                                    if (pressed > 1) multi = true
 
-                                        if (zoom != 1f) {
-                                            everZoomed = true
-                                            val s = (scale * zoom).coerceIn(1f, MAX_SCALE)
-                                            scale = s
-                                            if (s <= 1.0001f) offset = Offset.Zero
-                                        }
+                                    val zoom = event.calculateZoom()
+                                    val pan = event.calculatePan()
 
-                                        if (scale > 1f || multi) {
-                                            // 放大状态：单指/双指都是平移，绝不切图
-                                            offset = clampOffset(offset + pan, scale, size)
-                                        } else if (!everZoomed) {
-                                            // 原始大小：上下滑动切图（上滑下一张，下滑上一张）
-                                            accY += pan.y
-                                            if (!pageLocked && abs(accY) >= pageStep) {
-                                                stepRef.value(if (accY < 0f) 1 else -1)
-                                                pageLocked = true
-                                                accY = 0f
-                                            }
-                                        }
-
-                                        val pos = event.changes.firstOrNull()?.position ?: last
-                                        travel += (pos - last).getDistance()
-                                        last = pos
+                                    if (zoom != 1f) {
+                                        everZoomed = true
+                                        val s = (scale * zoom).coerceIn(1f, MAX_SCALE)
+                                        scale = s
+                                        if (s <= 1.0001f) offset = Offset.Zero
                                     }
 
+                                    if (scale > 1f) {
+                                        // 放大状态：只平移，绝不翻页
+                                        offset = clampOffset(offset + pan, scale, size)
+                                    } else if (!everZoomed && !multi) {
+                                        // 原始大小：跟手翻页
+                                        pageOffset = (pageOffset + pan.y)
+                                            .coerceIn(-pageHeight, pageHeight)
+                                    }
+
+                                    val pos = event.changes.firstOrNull()?.position ?: last
+                                    travel += (pos - last).getDistance()
+                                    last = pos
+                                }
+
+                                dragging = false
+                                if (abs(pageOffset) > touchSlop) {
+                                    settleRef.value()
+                                } else {
+                                    pageOffset = 0f
                                     if (!multi && travel < touchSlop &&
                                         SystemClock.uptimeMillis() - down.uptimeMillis < 500L
                                     ) {
@@ -263,10 +316,10 @@ fun PhotoViewerScreen(
                                 }
                             }
                         }
-                    )
-            )
+                )
+            }
 
-            // 顶部缩放按钮（底部按钮已移除，缩放另留两个入口）
+            // 顶部缩放按钮
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -448,6 +501,9 @@ fun PhotoViewerScreen(
         }
     }
 }
+
+/** 循环取下标（翻页到头会绕回另一端） */
+private fun wrapIndex(i: Int, n: Int): Int = if (n <= 0) 0 else ((i % n) + n) % n
 
 /** 把平移量限制在「放大后超出容器的部分」以内，避免图片被拖出屏幕 */
 private fun clampOffset(o: Offset, scale: Float, size: IntSize): Offset {
