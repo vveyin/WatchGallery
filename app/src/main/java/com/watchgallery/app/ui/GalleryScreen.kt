@@ -17,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -63,7 +64,6 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.abs
 
 /**
@@ -271,6 +271,8 @@ private fun ScalingPhotoList(
 
     // 起点→当前点的矩形覆盖到的照片全部加入选中。
     // 四周加 3px，保证纯横向/纵向划动（矩形某一边为 0）也能命中最外一行/列。
+    // gestureHits 记录本次手势已上报过的照片，只上报新增的，避免每个移动事件都重建选中集合。
+    val gestureHits = remember { mutableSetOf<String>() }
     fun selectInRect(a: Offset, b: Offset) {
         val pad = 3f
         val r = Rect(
@@ -279,9 +281,11 @@ private fun ScalingPhotoList(
             right = maxOf(a.x, b.x) + pad,
             bottom = maxOf(a.y, b.y) + pad
         )
-        val hits = HashSet<String>()
-        for ((uri, cell) in cellRects) if (cell.overlaps(r)) hits.add(uri)
-        if (hits.isNotEmpty()) onSelectRange(hits)
+        val fresh = ArrayList<String>(4)
+        for ((uri, cell) in cellRects) {
+            if (cell.overlaps(r) && gestureHits.add(uri)) fresh.add(uri)
+        }
+        if (fresh.isNotEmpty()) onSelectRange(fresh)
     }
 
     // 表冠滚动：照搬 f-x，事件到达直接 scrollBy，即时跟手、无阻尼。
@@ -315,7 +319,10 @@ private fun ScalingPhotoList(
             state = gridState,
             columns = GridCells.Fixed(columns),
             modifier = Modifier.fillMaxSize(),
-            userScrollEnabled = !selectionMode,
+            // 不在手势进行中切换 userScrollEnabled：长按进入多选时切换会重建滚动节点、
+            // 打断正在进行的指针手势（v0.26 卡死崩溃的另一个诱因）。
+            // 多选模式下覆盖层会消费掉全部事件，网格本来就滚不动，交给覆盖层手动滚动。
+            userScrollEnabled = true,
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = edgePad),
             verticalArrangement = Arrangement.spacedBy(8.dp),
             // 横向间隔取原来的一半（8dp → 4dp）：列宽随之变宽、照片变大，
@@ -327,6 +334,8 @@ private fun ScalingPhotoList(
                 DisposableEffect(photo.uri) {
                     onDispose { cellRects.remove(photo.uri.toString()) }
                 }
+                // 本单元格的长按信号：由 detectTapGestures 置位，拖动接续的协程读取
+                val longPressed = remember { mutableStateOf(false) }
                 // 同一排的所有照片共享一个「排缩放值」，并以屏幕水平中线为锚点统一缩放，
                 // 这样整排是连在一起放大/缩小的，而不是每张照片各自以自身中心缩。
                 val rowCenterY = remember { mutableFloatStateOf(-1f) }
@@ -376,53 +385,52 @@ private fun ScalingPhotoList(
                             }
                         }
                         .then(
-                            Modifier.pointerInput(photo.uri.toString()) {
-                                // 单击 / 长按 / 长按后继续拖动，全部在这一次手势里处理。
-                                // 长按成立后不松手直接滑动，横向纵向都做矩形选取（手机相册行为）。
-                                awaitEachGesture {
-                                    // 已经在多选模式：交给上层的覆盖层统一处理
-                                    if (selectionModeState.value) return@awaitEachGesture
-                                    val down = awaitFirstDown(requireUnconsumed = false)
-                                    val slop = viewConfiguration.touchSlop
-
-                                    // 长按超时前观察：抬起 = 单击；移动超过 slop = 交给网格滚动
-                                    val held = withTimeoutOrNull(viewConfiguration.longPressTimeoutMillis) {
-                                        var done = false
-                                        var still = true
-                                        while (!done) {
+                            Modifier
+                                // ── A：长按成立后的拖动接续 ──
+                                // 这里绝不能用 withTimeoutOrNull 自己算长按：超时会取消指针协程，
+                                // Compose 的事件分发会卡住（v0.26 的卡死崩溃就是这么来的）。
+                                // 改为「只观察、不消费」，等 detectTapGestures 的 onLongPress 置位后再接管。
+                                .pointerInput(photo.uri.toString()) {
+                                    awaitEachGesture {
+                                        // 已在多选模式：交给覆盖层统一处理
+                                        if (selectionModeState.value) return@awaitEachGesture
+                                        longPressed.value = false
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        gestureHits.clear()
+                                        var lastChange = down
+                                        // 长按前只观察：不消费，滚动/单击都不受影响
+                                        while (!longPressed.value) {
                                             val e = awaitPointerEvent(PointerEventPass.Initial)
                                             val c = e.changes.firstOrNull { it.id == down.id }
-                                            if (c == null || !c.pressed) {
-                                                still = true; done = true
-                                            } else if ((c.position - down.position).getDistance() > slop) {
-                                                still = false; done = true
-                                            }
+                                                ?: return@awaitEachGesture
+                                            if (!c.pressed) return@awaitEachGesture
+                                            lastChange = c
                                         }
-                                        still
-                                    }
-
-                                    when (held) {
-                                        // null = 超时未抬起 → 长按成立
-                                        null -> {
-                                            down.consume()
-                                            onLongPress(photo.uri.toString())
-                                            val anchor = down.position
-                                            while (true) {
-                                                val e = awaitPointerEvent(PointerEventPass.Initial)
-                                                val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                                                c.consume()
-                                                if (!c.pressed) break
-                                                selectInRect(anchor, c.position)
-                                            }
+                                        // 长按已成立：从这里开始接管本次手势，任意方向都做矩形选取
+                                        // 若是「长按后立刻松手」，lastChange 已经是抬起事件，直接结束
+                                        if (!lastChange.pressed) return@awaitEachGesture
+                                        val anchor = down.position
+                                        lastChange.consume()
+                                        selectInRect(anchor, lastChange.position)
+                                        while (true) {
+                                            val e = awaitPointerEvent(PointerEventPass.Initial)
+                                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                                            c.consume()
+                                            if (!c.pressed) break
+                                            selectInRect(anchor, c.position)
                                         }
-                                        true -> {
-                                            down.consume()
-                                            onPhotoClick(photo)
-                                        }
-                                        else -> Unit  // 已开始滚动，什么都不做
                                     }
                                 }
-                            }
+                                // ── B：单击打开大图 / 长按进入多选 ──
+                                .pointerInput(photo.uri.toString()) {
+                                    detectTapGestures(
+                                        onLongPress = {
+                                            longPressed.value = true
+                                            onLongPress(photo.uri.toString())
+                                        },
+                                        onTap = { onPhotoClick(photo) }
+                                    )
+                                }
                         )
                 ) {
                     PhotoCard(photo, showNames)
@@ -463,6 +471,7 @@ private fun ScalingPhotoList(
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             down.consume()
+                            gestureHits.clear()
                             val anchor = down.position
                             var last = down.position
                             // 0=未判定, 1=纵向滚动, 2=横向选取
