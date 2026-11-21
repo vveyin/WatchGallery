@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.InputStreamReader
@@ -61,25 +62,38 @@ object UpdateChecker {
     ): Result<ReleaseInfo> = withContext(Dispatchers.IO) {
         val errors = mutableListOf<String>()
 
-        // 1) Gitee 优先
+        /**
+         * 两个源都查，取版本号最大的一方。
+         * 不能「Gitee 成功就返回」：Gitee 的 API 在部分 CDN 节点会缓存旧响应
+         * （新发的 release 几天都读不到，query 里的时间戳也会被缓存层忽略）。
+         * 只要 GitHub 仓库保持同步，缓存再多也能拿到真实的新版。
+         */
+        var best: ReleaseInfo? = null
+        var bestCode = -1
+
         if (giteeOwner.isNotBlank()) {
             runCatching {
                 fetch(giteeApi(giteeOwner, giteeRepo), isGitee = true,
                     ghOwner = githubOwner, ghRepo = githubRepo)
             }
-                .onSuccess { return@withContext Result.success(it) }
+                .onSuccess {
+                    if (it.versionCode > bestCode) { best = it; bestCode = it.versionCode }
+                }
                 .onFailure { errors.add("Gitee: ${it.message}") }
         }
 
-        // 2) GitHub 兜底
         runCatching {
             fetch(githubApi(githubOwner, githubRepo), isGitee = false,
                 ghOwner = githubOwner, ghRepo = githubRepo)
         }
-            .onSuccess { return@withContext Result.success(it) }
+            .onSuccess {
+                if (it.versionCode > bestCode) { best = it; bestCode = it.versionCode }
+            }
             .onFailure { errors.add("GitHub: ${it.message}") }
 
-        Result.failure(Exception(errors.joinToString("；").ifBlank { "检查更新失败" }))
+        val winner = best
+        if (winner != null) Result.success(winner)
+        else Result.failure(Exception(errors.joinToString("；").ifBlank { "检查更新失败" }))
     }
 
     /** 兼容旧调用：只用 GitHub */
@@ -87,10 +101,10 @@ object UpdateChecker {
         check("", "", owner, repo)
 
     private fun giteeApi(owner: String, repo: String) =
-        "https://gitee.com/api/v5/repos/$owner/$repo/releases/latest"
+        "https://gitee.com/api/v5/repos/$owner/$repo/releases?page=1&per_page=100&_t=${System.currentTimeMillis()}"
 
     private fun githubApi(owner: String, repo: String) =
-        "https://api.github.com/repos/$owner/$repo/releases/latest"
+        "https://api.github.com/repos/$owner/$repo/releases?per_page=100&_t=${System.currentTimeMillis()}"
 
     /**
      * 国内可用的 GitHub 加速前缀。GitHub 自己的下载会 302 到
@@ -114,6 +128,9 @@ object UpdateChecker {
                 "Accept",
                 if (isGitee) "application/json" else "application/vnd.github+json"
             )
+            // 明确要求不读缓存：部分 CDN 会无视 URL 上的时间戳参数
+            setRequestProperty("Cache-Control", "no-cache, no-store, max-age=0")
+            setRequestProperty("Pragma", "no-cache")
             setRequestProperty("User-Agent", "WatchGallery-Updater")
         }
         val code = conn.responseCode
@@ -126,7 +143,29 @@ object UpdateChecker {
         }
         conn.disconnect()
 
-        val json = JSONObject(text)
+        // 列表接口返回数组；为兼容旧 latest 接口，单对象也包成数组处理。
+        // Gitee 的 /releases/latest 有 CDN 缓存，新发的 release 常常几天都读不到，
+        // 所以改用列表接口 + 时间戳参数绕缓存，并在列表里挑版本号最大的一个。
+        val arr = if (text.trimStart().startsWith("[")) JSONArray(text) else JSONArray().put(JSONObject(text))
+
+        var best: ReleaseInfo? = null
+        var bestCode = -1
+        for (i in 0 until arr.length()) {
+            val json = arr.getJSONObject(i)
+            if (json.optBoolean("prerelease", false)) continue
+            if (json.optBoolean("draft", false)) continue
+            val info = runCatching { parseRelease(json, ghOwner, ghRepo) }.getOrNull() ?: continue
+            if (info.versionCode > bestCode) { best = info; bestCode = info.versionCode }
+        }
+        return best ?: throw Exception("未找到带 APK 的 Release")
+    }
+
+    /** 从单个 release JSON 解析版本与下载地址；没有 .apk 资产则抛异常跳过 */
+    private fun parseRelease(
+        json: JSONObject,
+        ghOwner: String,
+        ghRepo: String
+    ): ReleaseInfo {
         val tag = json.optString("tag_name", "v0.0").removePrefix("v").trim()
         val notes = json.optString("body", "")
         var apkUrl = ""

@@ -11,15 +11,38 @@ android {
         applicationId = "com.watchgallery.app"
         minSdk = 24
         targetSdk = 34
-        versionCode = 51
-        versionName = "0.51"
+        versionCode = 52
+        versionName = "0.52"
         vectorDrawables { useSupportLibrary = true }
 
-        // 检查更新用的仓库地址：Gitee 优先（国内直连快），GitHub 作为备用源
+        // 检查更新用的仓库地址：Gitee 优先（国内直连快），GitHub 作为备用源。
+        // 具体仓库名由 flavor 决定（见 productFlavors）：
+        //   official → weargallery_release（只放发布包，不含源码）
+        //   self     → WatchGallery（源码仓库，也发 release）
         buildConfigField("String", "GITEE_OWNER", "\"vveyin\"")
-        buildConfigField("String", "GITEE_REPO", "\"WatchGallery\"")
         buildConfigField("String", "GITHUB_OWNER", "\"vveyin\"")
-        buildConfigField("String", "GITHUB_REPO", "\"WatchGallery\"")
+    }
+
+    /**
+     * 两个渠道，构建产物分别给「正式发布」和「自己调试」用。
+     *
+     * 差别只有一处：检测更新读哪个仓库。这样正式包的用户永远只看到正式发布包，
+     * 调试包则跟着源码仓库走（想装哪个就装哪个，两者同包名同签名，后装的覆盖先装的）。
+     */
+    flavorDimensions += "channel"
+    productFlavors {
+        create("official") {
+            dimension = "channel"
+            buildConfigField("String", "GITEE_REPO", "\"weargallery_release\"")
+            buildConfigField("String", "GITHUB_REPO", "\"weargallery_release\"")
+            buildConfigField("String", "CHANNEL", "\"official\"")
+        }
+        create("self") {
+            dimension = "channel"
+            buildConfigField("String", "GITEE_REPO", "\"WatchGallery\"")
+            buildConfigField("String", "GITHUB_REPO", "\"WatchGallery\"")
+            buildConfigField("String", "CHANNEL", "\"self\"")
+        }
     }
 
     signingConfigs {

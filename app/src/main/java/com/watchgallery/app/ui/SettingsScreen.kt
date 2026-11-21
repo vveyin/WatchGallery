@@ -67,7 +67,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
-import kotlin.math.sqrt
 
 /**
  * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有表冠滚动）。
@@ -642,16 +641,14 @@ private fun ThemeSettings(
 }
 
 /**
- * 关于页 —— 版式照 f-x 仓库的「应用信息」页：
+ * 关于页 —— 一页静态信息，没有任何按钮外观：
  *
- *   · **没有标题**，最上面只有应用图标，下面一列整行胶囊；
- *   · 每行文字**居中**，应用名单独一档大字号，其余统一 12sp（旧版 9~10sp，在手表上确实偏小）；
- *   · 行宽按「这一行此刻在屏幕上的高度」取圆内弦长自动收窄 —— 滚到上下弧边时
- *     胶囊不会顶到表壳被切掉，也不需要靠末尾塞空白把内容顶开；
- *   · 各行按序号错开淡入上浮（220ms / 每行 +35ms），和 f-x 关于页同一套参数。
- *
- * 圆屏收窄只在 [LocalCenterMagnify] 为 true（圆屏）时生效，方屏整屏是直角矩形，
- * 行宽保持满宽即可。
+ *   · **没有标题**，最上面只有应用图标（居中），下面一列**左对齐**的文字；
+ *   · 没有胶囊底、没有描边、没有按压反馈（网址那行仍可点/长按，但看起来就是一行蓝字）；
+ *   · 应用名单独一档大字号（20sp），其余 12sp；
+ *   · 文字块宽度按「这一行此刻在屏幕上的高度」取圆内弦长自动收窄 —— 滚到上下弧边时
+ *     行尾不会顶到表壳被切掉；方屏（[LocalCenterMagnify] = false）保持满宽；
+ *   · 各行按序号错开淡入上浮（220ms / 每行 +35ms）。
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -675,8 +672,8 @@ private fun AboutPage(crownEvents: Flow<Float>) {
     Box(Modifier.fillMaxSize()) {
         ScalingScrollColumn(
             crownEvents = crownEvents,
-            verticalArrangement = Arrangement.spacedBy(5.dp),
-            contentPadding = PaddingValues(start = 12.dp, top = 12.dp, end = 12.dp, bottom = 80.dp)
+            verticalArrangement = Arrangement.spacedBy(7.dp),
+            contentPadding = PaddingValues(start = 14.dp, top = 12.dp, end = 14.dp, bottom = 80.dp)
         ) {
             // 序号在构建期算好（content lambda 会重组，不能在里面 ++）
             var i = 0
@@ -700,24 +697,22 @@ private fun AboutPage(crownEvents: Flow<Float>) {
                 AboutTagline("手表上的随身相册 · 由春羽开发", entered = entered, index = tagIdx)
             }
             item(key = "about_intro") {
-                AboutPill(
+                AboutText(
                     text = "原图浏览 · 表冠缩放 · 旋转裁剪 · 多选整理\n一块表，装下你舍不得删的每一张",
                     entered = entered,
                     index = introIdx,
-                    minHeight = 46.dp,
-                    maxLines = 3,
                     lineHeight = 17.sp
                 )
             }
             item(key = "about_version") {
-                AboutPill(
+                AboutText(
                     text = "版本 ${BuildConfig.VERSION_NAME}",
                     entered = entered,
                     index = verIdx
                 )
             }
             item(key = "about_code") {
-                AboutPill(
+                AboutText(
                     text = "Version Code ${BuildConfig.VERSION_CODE}",
                     entered = entered,
                     index = codeIdx
@@ -726,7 +721,7 @@ private fun AboutPage(crownEvents: Flow<Float>) {
             // 「空一排」：一个整行的视觉间隔（f-x 里也是一项，不是 spacing 特例）
             item(key = "about_gap") { Spacer(Modifier.height(12.dp)) }
             item(key = "about_dev") {
-                AboutPill(
+                AboutText(
                     text = "开发者 春羽",
                     entered = entered,
                     index = devIdx,
@@ -734,7 +729,7 @@ private fun AboutPage(crownEvents: Flow<Float>) {
                 )
             }
             item(key = "about_social") {
-                AboutPill(
+                AboutText(
                     text = "0o0社区@春羽",
                     entered = entered,
                     index = socIdx,
@@ -743,7 +738,7 @@ private fun AboutPage(crownEvents: Flow<Float>) {
             }
             // 网址：蓝字，点击用浏览器打开，长按复制并弹应用内提示（系统 Toast 在圆屏会被裁）
             item(key = "about_url") {
-                AboutPill(
+                AboutText(
                     text = "0o0.site",
                     entered = entered,
                     index = urlIdx,
@@ -829,7 +824,7 @@ private fun AboutName(text: String, entered: Boolean, index: Int) {
         lineHeight = 24.sp,
         fontWeight = FontWeight.SemiBold,
         color = MaterialTheme.colorScheme.onBackground,
-        textAlign = TextAlign.Center,
+        textAlign = TextAlign.Start,
         modifier = Modifier
             .fillMaxWidth()
             .graphicsLayer {
@@ -848,7 +843,7 @@ private fun AboutTagline(text: String, entered: Boolean, index: Int) {
         fontSize = 11.sp,
         lineHeight = 14.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        textAlign = TextAlign.Center,
+        textAlign = TextAlign.Start,
         modifier = Modifier
             .fillMaxWidth()
             .graphicsLayer {
@@ -859,36 +854,39 @@ private fun AboutTagline(text: String, entered: Boolean, index: Int) {
 }
 
 /**
- * 一条信息：整行胶囊 + 居中文字。视觉语言与设置页的条目、f-x 的「应用信息」行一致。
+ * 一条信息：**纯文字**，左对齐，没有胶囊底、没有描边、没有按压反馈。
  *
- * @param minHeight 一行的高度；介绍那条传 46dp 让两行文字不贴边
- * @param maxLines 介绍行允许 3 行；其余都是 1 行
+ * 与上一版的区别只有外观：内容、顺序、字号、入场动画都没动。
+ * 网址那行仍然挂点击/长按（打开浏览器、复制并弹提示），但视觉上就是一行蓝字，
+ * 不再有「这是一个按钮」的暗示 —— 用户要的是静态信息页。
+ *
  * @param onClick / onLongClick 只有网址那行挂得上，其余传 null（连手势节点都不建）
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun AboutPill(
+private fun AboutText(
     text: String,
     entered: Boolean,
     index: Int,
     color: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     fontSize: TextUnit = 12.sp,
-    lineHeight: TextUnit = 15.sp,
-    minHeight: Dp = 32.dp,
-    maxLines: Int = 1,
+    lineHeight: TextUnit = 16.sp,
     fontWeight: FontWeight = FontWeight.Normal,
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null
 ) {
     val reveal = enterReveal(entered, index)
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant,
-        shape = RoundedCornerShape(50),
+    val interaction = remember { MutableInteractionSource() }
+    Text(
+        text = text,
+        fontSize = fontSize,
+        lineHeight = lineHeight,
+        fontWeight = fontWeight,
+        color = color,
+        textAlign = TextAlign.Start,
         modifier = Modifier
-            // 先按圆屏弦长收窄，再 fillMaxWidth —— 胶囊的实际宽度就是「屏宽 − 两侧留白」
-            .arcWidthPadding()
+            // 圆屏按弦长收窄，文字在这个块内左对齐；方屏原样满宽
             .fillMaxWidth()
-            .heightIn(min = minHeight)
             .graphicsLayer {
                 alpha = reveal
                 translationY = (1f - reveal) * 10f
@@ -896,6 +894,9 @@ private fun AboutPill(
             .then(
                 if (onClick != null || onLongClick != null) {
                     Modifier.combinedClickable(
+                        interactionSource = interaction,
+                        // 不加涟漪：这是信息页，不是一组按钮
+                        indication = null,
                         onClick = { onClick?.invoke() },
                         onLongClick = onLongClick
                     )
@@ -903,64 +904,11 @@ private fun AboutPill(
                     Modifier
                 }
             )
-    ) {
-        // 内层也写 heightIn(min)：Surface 的内容默认顶对齐，只给外层 minHeight 会让
-        // 文字整体偏上 3dp；这里让盒子自己撑到同一高度，再靠 contentAlignment 居中。
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .heightIn(min = minHeight)
-                .padding(horizontal = 12.dp, vertical = 5.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Text(
-                text = text,
-                fontSize = fontSize,
-                lineHeight = lineHeight,
-                fontWeight = fontWeight,
-                color = color,
-                textAlign = TextAlign.Center,
-                maxLines = maxLines,
-                overflow = TextOverflow.Ellipsis
-            )
-        }
-    }
+            // 上下留一点呼吸，同时把点击热区从一条细字放宽到一行高
+            .padding(vertical = 3.dp)
+    )
 }
 
-/**
- * 圆屏上按「这一行此刻的高度」把行宽收窄到圆内弦长，方屏原样返回。
- *
- * 圆心取屏幕中心，半径取短边的一半；行中心离屏幕中心越远，弦越短 ——
- * 滚到上下边缘时胶囊跟着变窄，两个角不会伸到表壳外面。
- * 留 0.90 的余量，再夹一个最小宽度（0.5 屏宽），避免极端位置把字挤没。
- *
- * 位置回调每帧都会来，这里把结果量化到 1dp，只有真的变了才写回 state，
- * 否则滚动时会因为「1px 级抖动」反复重组。
- */
-@Composable
-private fun Modifier.arcWidthPadding(): Modifier {
-    if (!LocalCenterMagnify.current) return this
-    val density = LocalDensity.current
-    val configuration = LocalConfiguration.current
-    val wPx = with(density) { configuration.screenWidthDp.dp.toPx() }
-    val hPx = with(density) { configuration.screenHeightDp.dp.toPx() }
-    if (wPx <= 0f || hPx <= 0f) return this
-    val padDp = remember { mutableFloatStateOf(0f) }
-
-    return this
-        .onGloballyPositioned { coords ->
-            val centerY = coords.positionInRoot().y + coords.size.height / 2f
-            val r = minOf(wPx, hPx) / 2f
-            val dy = abs(centerY - hPx / 2f)
-            val half = if (dy >= r) 0f else sqrt((r * r - dy * dy).coerceAtLeast(0f))
-            val usable = (half * 2f * 0.90f)
-                .coerceAtLeast(wPx * 0.50f)
-                .coerceAtMost(wPx)
-            val next = with(density) { ((wPx - usable) / 2f).toDp() }.value
-            if (abs(next - padDp.floatValue) >= 1f) padDp.floatValue = next
-        }
-        .padding(horizontal = padDp.floatValue.dp)
-}
 
 private fun openUrl(context: Context, url: String) {
     runCatching {
