@@ -92,10 +92,18 @@ fun SettingsScreen(
 
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    val offsetX = remember { Animatable(0f) }
+    // 二级页的水平偏移：widthPx = 一级页（正常态），0 = 二级页完全铺满。
+    // 初值是 NaN 而不是 0f —— 0f 会被算成「二级页完全打开」，一级菜单整页缩到
+    // 0.90 倍并左移 5% 屏宽，设置条看着既不居中也没有居中放大。
+    // 首帧宽度未知，先给 NaN，等 BoxWithConstraints 量出宽度再 snapTo(widthPx)。
+    val offsetX = remember { Animatable(Float.NaN) }
 
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val widthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
+
+        LaunchedEffect(widthPx) {
+            if (!offsetX.value.isFinite()) offsetX.snapTo(widthPx)
+        }
 
         // 打开二级页：从右侧滑入（一级菜单同步从后面退开）
         LaunchedEffect(subPage) {
@@ -112,7 +120,8 @@ fun SettingsScreen(
             Modifier
                 .fillMaxSize()
                 .graphicsLayer {
-                    val progress = (offsetX.value / widthPx).coerceIn(0f, 1f)
+                    val raw = if (offsetX.value.isFinite()) offsetX.value else widthPx
+                    val progress = (raw / widthPx).coerceIn(0f, 1f)
                     val eased = 1f - (1f - progress) * (1f - progress)
                     val s = 0.90f + 0.10f * eased
                     scaleX = s
@@ -140,8 +149,9 @@ fun SettingsScreen(
                 Modifier
                     .fillMaxSize()
                     .graphicsLayer {
-                        translationX = offsetX.value
-                        val progress = (offsetX.value / widthPx).coerceIn(0f, 1f)
+                        translationX = if (offsetX.value.isFinite()) offsetX.value else 0f
+                        val raw = if (offsetX.value.isFinite()) offsetX.value else 0f
+                        val progress = (raw / widthPx).coerceIn(0f, 1f)
                         alpha = 1f - 0.38f * progress
                     }
                     .pointerInput(subPage) {
