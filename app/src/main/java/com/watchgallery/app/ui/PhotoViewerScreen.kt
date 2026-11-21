@@ -867,7 +867,7 @@ private fun decodeSize(
  * 一张图各自的放大上限 —— 按**屏幕像素**算，不再写死一个倍数。
  *
  * 依据是「这张图还剩多少像素可看」：铺满屏幕后长边约占屏幕长边，所以
- * `原图长边 / 屏幕长边` 就是 1:1 像素映射对应的倍数，再给 15% 余量；
+ * `原图长边 / 屏幕长边` 就是 1:1 像素映射对应的倍数，再乘 2.3（= 1:1 的 2.3 倍余量）；
  * 同时不能超过最高解码档位（[TOP_TIER_LONG]）—— 超过它只是把像素拉开，不会更清楚。
  *
  * 屏幕越大 / 原图越小，上限自动变小；长图（1080×8000）能放到看清文字，
@@ -878,9 +878,9 @@ private fun maxZoomFor(photo: Photo?, screenW: Int, screenH: Int): Float {
     val srcW = if (photo != null && photo.width > 0) photo.width else screenW
     val srcH = if (photo != null && photo.height > 0) photo.height else screenH
     val srcLong = maxOf(srcW, srcH).toFloat()
-    val cap = minOf(srcLong, TOP_TIER_LONG) / dispLong * 1.15f
-    // 下限 2 倍：再小的图也允许看个大概；上限 16 倍：极端比例的截图也不会失控
-    return cap.coerceIn(2f, 16f)
+    val cap = minOf(srcLong, TOP_TIER_LONG) / dispLong * 2.3f
+    // 下限 2 倍：再小的图也允许看个大概；上限 32 倍：极端比例的截图也不会失控
+    return cap.coerceIn(2f, 32f)
 }
 
 /** 把平移量限制在「放大后超出容器的部分」以内，避免图片被拖出屏幕 */private fun clampOffset(o: Offset, scale: Float, size: IntSize): Offset {

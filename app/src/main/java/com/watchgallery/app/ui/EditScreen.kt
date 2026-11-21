@@ -195,13 +195,13 @@ fun EditScreen(
     val screenLongPx = with(density) { maxOf(cfg.screenWidthDp, cfg.screenHeightDp).dp.toPx() }
 
     /**
-     * 编辑页的放大上限：同样按**屏幕像素**算 —— 原图长边 / 屏幕长边，再多 15% 余量。
+     * 编辑页的放大上限：同样按**屏幕像素**算 —— 原图长边 / 屏幕长边 × 2.3（1:1 的两倍多）。
      * 小图不会被拉到模糊，长图又能放到看清细节；不再是一个写死的倍数。
      */
     val maxZoom = remember(sourceBitmap, screenLongPx) {
         val b = sourceBitmap
         if (b == null || screenLongPx <= 0f) EDIT_MAX_SCALE
-        else (maxOf(b.width, b.height) / screenLongPx * 1.15f).coerceIn(2f, 12f)
+        else (maxOf(b.width, b.height) / screenLongPx * 2.3f).coerceIn(2f, 24f)
     }
 
     // ── 抽屉：0 = 不显示，1 = 全屏 ──
