@@ -41,7 +41,9 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.AwaitPointerEventScope
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -197,6 +199,9 @@ fun GalleryScreen(
                 selectedUris = selectedUris,
                 onLoadMore = { viewModel.loadMore() },
                 onPhotoClick = onPhotoClick,
+                onOpenPhoto = { uri ->
+                    photos.firstOrNull { it.uri.toString() == uri }?.let(onPhotoClick)
+                },
                 onLongPress = { viewModel.enterSelectionMode(it) },
                 onToggle = { viewModel.toggleSelected(it) },
                 onSelectRange = { viewModel.addSelected(it) },
@@ -217,11 +222,82 @@ fun GalleryScreen(
     }
 }
 
-/** 返回屏幕上某坐标点命中的照片 uri（取第一个包含该点的 cell），未命中返回 null。 */
-private fun hitCell(cellRects: Map<String, Rect>, p: Offset): String? =
-    cellRects.entries.firstOrNull { (_, r) ->
-        p.x in r.left..r.right && p.y in r.top..r.bottom
-    }?.key
+/**
+ * 命中照片：先看是否落在某个 cell 矩形内；不在矩形内时取最近的 cell（间隙内也算）。
+ * 列表里的照片会按行缩放（中间 1.10 / 边缘 0.78），cellRects 记录的是未缩放的布局矩形，
+ * 和实际看到的边界有十几像素差，留 [slop] 的容差可以把这点误差吃掉。
+ */
+private fun hitCellOrNearest(cellRects: Map<String, Rect>, p: Offset, slop: Float): String? {
+    var best: String? = null
+    var bestDist = Float.MAX_VALUE
+    for ((uri, r) in cellRects) {
+        val dx = maxOf(r.left - p.x, 0f, p.x - r.right)
+        val dy = maxOf(r.top - p.y, 0f, p.y - r.bottom)
+        val d = if (dx == 0f && dy == 0f) 0f else kotlin.math.hypot(dx, dy)
+        if (d < bestDist) {
+            bestDist = d
+            best = uri
+        }
+    }
+    return if (bestDist <= slop) best else null
+}
+
+/** 某张照片右上角的复选圈热区：圈中心距 cell 右上角各 [inset]，半径 [radius]（都按设计稿 dp 传 px） */
+private fun inCheckCircle(cell: Rect, p: Offset, inset: Float, radius: Float): Boolean {
+    val cx = cell.right - inset
+    val cy = cell.top + inset
+    return kotlin.math.hypot(p.x - cx, p.y - cy) <= radius
+}
+
+/**
+ * 多选模式下的「普通滑动快捷多选」手势（一次按下 → 抬起）。
+ *
+ * 两个入口共用这一份逻辑，避免两套判定各写一遍、行为还不一致：
+ *  - 长按成立后手指还没抬起 → 从长按点起直接接着滑（不用抬手指）；
+ *  - 多选覆盖层 → 从按下点起滑。
+ *
+ * 规则（45° 分界，判定一次即锁定）：
+ *  - 横向滑动 = 起点到当前点的矩形覆盖到的照片全部选中；
+ *  - 纵向滑动 = 滚动图片列表；
+ *  - 横向锁定后再纵向滑动，仍只是扩大选取范围，不会切成滚动；
+ *  - 完全没移动 = 轻点，交给 [onTapAt]（打开大图 / 点复选圈切换）。
+ */
+private suspend fun AwaitPointerEventScope.runSelectionDrag(
+    down: PointerInputChange,
+    onScroll: (Float) -> Unit,
+    onSelectRect: (Offset, Offset) -> Unit,
+    allowTap: Boolean,
+    onTapAt: (Offset) -> Unit
+) {
+    val anchor = down.position
+    var last = anchor
+    var mode = 0            // 0=未判定 1=纵向滚动 2=横向选取
+    var tapped = true
+    while (true) {
+        val event = awaitPointerEvent(PointerEventPass.Initial)
+        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+        change.consume()
+        val cur = change.position
+        val dx = cur.x - anchor.x
+        val dy = cur.y - anchor.y
+        if ((cur - anchor).getDistance() > 8f) tapped = false
+
+        if (mode == 0) {
+            if (maxOf(abs(dx), abs(dy)) > SELECT_DIRECTION_SLOP) {
+                mode = if (abs(dx) > abs(dy)) 2 else 1
+                if (mode == 1) onScroll(-dy)      // 补上判定前已移动的纵向距离，起手不丢位移
+                else onSelectRect(anchor, cur)
+            }
+        } else if (mode == 1) {
+            onScroll(-(cur.y - last.y))           // 手指往下拖 → 内容往前
+        } else {
+            onSelectRect(anchor, cur)
+        }
+        last = cur
+        if (!change.pressed) break
+    }
+    if (allowTap && tapped && mode == 0) onTapAt(anchor)
+}
 
 /**
  * 正方形网格照片列表：每排 [columns] 张，越靠近视口中心的「行」越大、上下淡出。
@@ -239,6 +315,7 @@ private fun ScalingPhotoList(
     selectedUris: Set<String>,
     onLoadMore: () -> Unit,
     onPhotoClick: (Photo) -> Unit,
+    onOpenPhoto: (String) -> Unit,
     onLongPress: (String) -> Unit,
     onToggle: (String) -> Unit,
     onSelectRange: (Collection<String>) -> Unit,
@@ -264,6 +341,13 @@ private fun ScalingPhotoList(
 
     // 每张照片的屏幕矩形（px），供滑动刷选判定命中用。key = uri 字符串。
     val cellRects = remember { mutableMapOf<String, Rect>() }
+
+    // 多选轻点的判定尺寸（px）：
+    //  - 复选圈圆心距 cell 右上角各 5dp+11dp=16dp，热区半径放大到 20dp（手指粗，宁大勿小）；
+    //  - 照片本体允许 22dp 的容差，吃掉行缩放（1.10 / 0.78）带来的边界误差。
+    val circleInsetPx = with(density) { 16.dp.toPx() }
+    val circleRadiusPx = with(density) { 20.dp.toPx() }
+    val nearestSlopPx = with(density) { 22.dp.toPx() }
 
     // 手势开始时读取最新的多选状态。不能拿它当 pointerInput 的 key —— 长按进入多选后
     // 状态翻转会让手势协程重启，后续拖动就收不到了。
@@ -386,10 +470,11 @@ private fun ScalingPhotoList(
                         }
                         .then(
                             Modifier
-                                // ── A：长按成立后的拖动接续 ──
-                                // 这里绝不能用 withTimeoutOrNull 自己算长按：超时会取消指针协程，
+                                // ── A：长按成立后，手指不用抬起就能直接接着滑动多选 ──
+                                // 绝不能用 withTimeoutOrNull 自己算长按：超时会取消指针协程，
                                 // Compose 的事件分发会卡住（v0.26 的卡死崩溃就是这么来的）。
-                                // 改为「只观察、不消费」，等 detectTapGestures 的 onLongPress 置位后再接管。
+                                // 这里只「观察、不消费」，等 detectTapGestures 的 onLongPress 置位后接管，
+                                // 接管后走的是和多选覆盖层完全一样的那套滑动逻辑（runSelectionDrag）。
                                 .pointerInput(photo.uri.toString()) {
                                     awaitEachGesture {
                                         // ⚠️ 顺序极其重要：必须先挂起等按下，再判断多选状态。
@@ -398,36 +483,28 @@ private fun ScalingPhotoList(
                                         // 如果 block 在**任何挂起点之前**就 return，下一轮会立刻再次
                                         // 调用 block —— 形成没有挂起点的空转循环，把主线程
                                         // （AndroidUiDispatcher.Main）占满：UI 立即卡死、几秒后 ANR 被杀。
-                                        // 这正是 v0.26/v0.27「长按进多选后松手，卡几秒直接崩溃」的根因：
-                                        // 原来这里第一行就 `if (selectionMode) return`，一旦进入多选，
-                                        // 屏幕上每个可见单元格都在空转。
+                                        // 这正是 v0.26/v0.27「长按进多选后松手，卡几秒直接崩溃」的根因。
                                         val down = awaitFirstDown(requireUnconsumed = false)
                                         // 已在多选模式：交给覆盖层统一处理，本次手势什么都不做
                                         if (selectionModeState.value) return@awaitEachGesture
                                         longPressed.value = false
-                                        gestureHits.clear()
-                                        var lastChange = down
                                         // 长按前只观察：不消费，滚动/单击都不受影响
                                         while (!longPressed.value) {
                                             val e = awaitPointerEvent(PointerEventPass.Initial)
                                             val c = e.changes.firstOrNull { it.id == down.id }
                                                 ?: return@awaitEachGesture
                                             if (!c.pressed) return@awaitEachGesture
-                                            lastChange = c
                                         }
-                                        // 长按已成立：从这里开始接管本次手势，任意方向都做矩形选取
-                                        // 若是「长按后立刻松手」，lastChange 已经是抬起事件，直接结束
-                                        if (!lastChange.pressed) return@awaitEachGesture
-                                        val anchor = down.position
-                                        lastChange.consume()
-                                        selectInRect(anchor, lastChange.position)
-                                        while (true) {
-                                            val e = awaitPointerEvent(PointerEventPass.Initial)
-                                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                                            c.consume()
-                                            if (!c.pressed) break
-                                            selectInRect(anchor, c.position)
-                                        }
+                                        // 长按成立：以长按点为锚点，立刻按普通滑动多选处理
+                                        // （不触发轻点，长按本身已选中这张照片）
+                                        gestureHits.clear()
+                                        runSelectionDrag(
+                                            down = down,
+                                            onScroll = { selectionScroll.tryEmit(it) },
+                                            onSelectRect = { a, b -> selectInRect(a, b) },
+                                            allowTap = false,
+                                            onTapAt = {}
+                                        )
                                     }
                                 }
                                 // ── B：单击打开大图 / 长按进入多选 ──
@@ -470,8 +547,8 @@ private fun ScalingPhotoList(
         //  - 横向滑动（|dx| > |dy|，45° 为分界）= 快捷多选：起点到当前位置的矩形覆盖到的照片全部选中；
         //  - 纵向滑动（|dy| ≥ |dx|）= 滚动图片列表；
         //  - 横向锁定后不松手再纵向滑动，仍只是扩大选取矩形，不会切成滚动；
-        //  - 完全没移动的轻点 = 切换起点照片的选中状态。
-        // 全程不画任何可见框。
+        //  - 轻点照片 = 打开大图查看；轻点右上角复选圈 = 切换这张的选中状态。
+        // 全程不画任何可见框。具体判定在 runSelectionDrag 里，与长按接续手势共用。
         if (selectionMode) {
             Box(
                 Modifier
@@ -481,47 +558,24 @@ private fun ScalingPhotoList(
                             val down = awaitFirstDown(requireUnconsumed = false)
                             down.consume()
                             gestureHits.clear()
-                            val anchor = down.position
-                            var last = down.position
-                            // 0=未判定, 1=纵向滚动, 2=横向选取
-                            var mode = 0
-                            var tapped = true
-
-                            while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                if (event.changes.all { !it.pressed }) break
-                                val change = event.changes.first()
-                                change.consume()
-                                val cur = change.position
-
-                                val dx = cur.x - anchor.x
-                                val dy = cur.y - anchor.y
-                                if ((cur - anchor).getDistance() > 8f) tapped = false
-
-                                if (mode == 0) {
-                                    // 离开起点 20px 后按 45° 分界判定方向，之后整个手势不再改变
-                                    if (maxOf(abs(dx), abs(dy)) > SELECT_DIRECTION_SLOP) {
-                                        mode = if (abs(dx) > abs(dy)) 2 else 1
-                                        if (mode == 1) {
-                                            // 补上判定前已移动的纵向距离，起手不丢位移
-                                            selectionScroll.tryEmit(-(cur.y - anchor.y))
+                            runSelectionDrag(
+                                down = down,
+                                onScroll = { selectionScroll.tryEmit(it) },
+                                onSelectRect = { a, b -> selectInRect(a, b) },
+                                allowTap = true,
+                                onTapAt = { p ->
+                                    val uri = hitCellOrNearest(cellRects, p, nearestSlopPx)
+                                    if (uri != null) {
+                                        val cell = cellRects[uri]
+                                        // 点在复选圈上才算「选择」，点照片本体是打开大图
+                                        if (cell != null && inCheckCircle(cell, p, circleInsetPx, circleRadiusPx)) {
+                                            onToggle(uri)
                                         } else {
-                                            selectInRect(anchor, cur)
+                                            onOpenPhoto(uri)
                                         }
                                     }
-                                } else if (mode == 1) {
-                                    // 纵向：滚动列表（手指往下拖 → 内容往前，故取负）
-                                    selectionScroll.tryEmit(-(cur.y - last.y))
-                                } else {
-                                    // 横向：选取；不松手继续纵向滑动也只是扩大矩形范围
-                                    selectInRect(anchor, cur)
                                 }
-                                last = cur
-                            }
-                            // 抬起：完全没移动视为轻点 —— 切换起点照片的选中状态
-                            if (tapped) {
-                                hitCell(cellRects, down.position)?.let { onToggle(it) }
-                            }
+                            )
                         }
                     }
             )
