@@ -11,6 +11,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
@@ -33,6 +35,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -111,6 +114,12 @@ private enum class EditTool { NONE, FILTER, ADJUST, CROP, DRAW, TEXT, ROTATE }
 /** 调节参数顺序：亮度 / 对比度 / 饱和度 / 色温 */
 private val AdjustLabels = listOf("亮度", "对比度", "饱和度", "色温")
 
+/** 文本框可选的文字颜色（ARGB）：白 / 黑 / 红 / 橙 / 黄 / 绿 / 蓝 / 紫 */
+private val TextColors = listOf<Int>(
+    0xFFFFFFFF.toInt(), 0xFF000000.toInt(), 0xFFE53935.toInt(), 0xFFFB8C00.toInt(),
+    0xFFFDD835.toInt(), 0xFF43A047.toInt(), 0xFF1E88E5.toInt(), 0xFF8E24AA.toInt()
+)
+
 /** 读不到图片尺寸时的兜底放大上限（正常情况下按屏幕像素现算，见 [maxZoom]） */
 private const val EDIT_MAX_SCALE = 6f
 
@@ -171,7 +180,12 @@ fun EditScreen(
     // ── 文本框 ──
     var boxes by remember { mutableStateOf<List<TextBox>>(emptyList()) }
     var editingId by remember { mutableStateOf<Int?>(null) }
+    /** 只选中（显示边框）但不进入输入的框：单击选中，双击才进输入抽屉 */
+    var selectedBoxId by remember { mutableStateOf<Int?>(null) }
     var nextBoxId by remember { mutableIntStateOf(1) }
+
+    // 文本框输入抽屉：进入输入时弹起，确定/取消/拉下时收起
+    val textDrawer = rememberDrawerState(false)
 
     // ── 缩放 / 平移 ──
     var zoom by remember { mutableFloatStateOf(1f) }
@@ -262,6 +276,7 @@ fun EditScreen(
             if (t != EditTool.CROP) cropMode = false
         }
         editingId = null
+        selectedBoxId = null
     }
 
     /** 本次编辑开始时的文字，用于「取消」还原 */
@@ -281,6 +296,18 @@ fun EditScreen(
         val id = editingId ?: return
         boxes = boxes.map { if (it.id == id) it.copy(text = editOrigin) else it }
         blurBox()
+    }
+
+    // ── 文本框输入抽屉的联动 ──
+    val keyboard = LocalSoftwareKeyboardController.current
+    DrawerSettle(textDrawer) { open ->
+        if (!open && editingId != null) {
+            keyboard?.hide()
+            blurBox()   // 把抽屉拉下来 = 确定保留
+        }
+    }
+    LaunchedEffect(editingId) {
+        if (editingId != null) textDrawer.open() else textDrawer.close()
     }
 
     Box(
@@ -365,6 +392,7 @@ fun EditScreen(
                 LaunchedEffect(crownEvents) {
                     crownEvents.collect { delta ->
                         if (drawer.progress.floatValue > 0.002f) return@collect
+                        if (textDrawer.progress.floatValue > 0.002f) return@collect
                         setZoom(zoom + delta * 0.01f)
                     }
                 }
@@ -465,6 +493,18 @@ fun EditScreen(
                                 var travel = 0f
                                 var pinch = false
                                 var strokeStarted = false
+                                // 起手点落在了文本框上：这次按下整个交给文本框层
+                                // （拖动移动它、单击选中、双击进入输入），手势层什么都不做
+                                val onBox = tool == EditTool.TEXT && run {
+                                    val bp = toBitmap(down.position)
+                                    boxes.any { b ->
+                                        val chars = b.text.length.coerceAtLeast(1)
+                                        val w = (b.sizePx * 0.62f * chars).coerceAtLeast(b.sizePx)
+                                        val h = b.sizePx * 1.3f
+                                        bp.x >= b.x && bp.x <= b.x + w &&
+                                            bp.y >= b.y && bp.y <= b.y + h
+                                    }
+                                }
 
                                 while (true) {
                                     val e = awaitPointerEvent()
@@ -501,6 +541,9 @@ fun EditScreen(
                                     if (travel > slop) {
                                         val bp = toBitmap(pos)
                                         when {
+                                            onBox -> {
+                                                // 文本框的拖动由文本框层自己处理
+                                            }
                                             cropMode -> {
                                                 val x = bp.x.coerceIn(0f, bmpW.toFloat())
                                                 val y = bp.y.coerceIn(0f, bmpH.toFloat())
@@ -539,7 +582,9 @@ fun EditScreen(
 
                                 // 轻点：文本框模式下新建；其它情况先收掉正在输入的文本框
                                 if (!pinch && travel < slop) {
-                                    if (tool == EditTool.TEXT && editingId == null) {
+                                    if (onBox) {
+                                        // 单击/双击文本框由文本框层处理（双击进入输入抽屉）
+                                    } else if (tool == EditTool.TEXT && editingId == null) {
                                         val bp = toBitmap(down.position)
                                         val x = bp.x.coerceIn(0f, bmpW.toFloat())
                                         val y = bp.y.coerceIn(0f, bmpH.toFloat())
@@ -556,6 +601,7 @@ fun EditScreen(
                                         editingId = id
                                     } else {
                                         blurBox()
+                                        selectedBoxId = null
                                     }
                                 }
                             }
@@ -581,8 +627,10 @@ fun EditScreen(
                     ) {
                         boxes.forEach { box ->
                             val focused = box.id == editingId
+                            // 单击选中、双击进入输入的框都显示边框
+                            val selected = focused || box.id == selectedBoxId
                             // 边框颜色跟着底下的图片亮度走：图亮用灰框、图暗用白框，都是半透明的
-                            val lum = if (focused) luminance(bmp, box) else 0f
+                            val lum = if (selected) luminance(bmp, box) else 0f
                             val borderColor = if (lum > 0.55f) Color(0x99A0A0A0) else Color(0xCCFFFFFF)
                             Box(
                                 Modifier
@@ -593,17 +641,44 @@ fun EditScreen(
                                         )
                                     }
                                     .then(
-                                        if (focused) Modifier
+                                        if (selected) Modifier
                                             .border(1.5.dp, borderColor, RoundedCornerShape(3.dp))
                                             .padding(2.dp)
                                         else Modifier.padding(2.dp)
                                     )
                                     .then(
-                                        if (tool == EditTool.TEXT) Modifier.clickable {
-                                            if (editingId != null && editingId != box.id) blurBox()
-                                            editOrigin = box.text
-                                            editingId = box.id
-                                        } else Modifier
+                                        if (tool == EditTool.TEXT) Modifier
+                                            // 单击：只选中（亮边框）；双击：进入输入抽屉
+                                            .pointerInput(box.id) {
+                                                detectTapGestures(
+                                                    onTap = {
+                                                        if (editingId != null && editingId != box.id) blurBox()
+                                                        selectedBoxId = box.id
+                                                    },
+                                                    onDoubleTap = {
+                                                        if (editingId != null && editingId != box.id) blurBox()
+                                                        selectedBoxId = box.id
+                                                        editOrigin = box.text
+                                                        editingId = box.id
+                                                    }
+                                                )
+                                            }
+                                            // 拖动：跟着手指走，坐标换算回原图像素
+                                            .pointerInput(box.id, bmpW, bmpH) {
+                                                detectDragGestures(
+                                                    onDragStart = { selectedBoxId = box.id },
+                                                    onDrag = { change, amount ->
+                                                        change.consume()
+                                                        boxes = boxes.map {
+                                                            if (it.id == box.id) it.copy(
+                                                                x = (it.x + amount.x / sf).coerceIn(0f, bmpW.toFloat()),
+                                                                y = (it.y + amount.y / sf).coerceIn(0f, bmpH.toFloat())
+                                                            ) else it
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                        else Modifier
                                     )
                             ) {
                                 Text(
@@ -911,28 +986,108 @@ fun EditScreen(
             }
         }
 
-        // ── 文本框输入条：只用系统输入法，界面上只有输入框 + 取消 / 确定 ──
-        // 出现时**不主动调起输入法**：先让用户看清输入条和按钮，点一下输入框再弹键盘；
-        // 输入法上的确认键也被禁用（ImeAction.None），只认这里的「确定」。
+        // ── 文本框输入抽屉：把手 + 输入框 + 文字颜色 + 取消 / 确定 ──
+        // 与主抽屉同一套 DrawerState：跟手拖动、松手吸附；出现时不主动调起输入法，
+        // 点一下输入框再弹键盘；输入法上的确认键禁用（ImeAction.None），只认「确定」。
         val editing = boxes.firstOrNull { it.id == editingId }
-        if (editing != null) {
-            val keyboard = LocalSoftwareKeyboardController.current
+        if (editing != null || textDrawer.progress.floatValue > 0.002f) {
+            if (blurEnabled) {
+                BlurBand(
+                    heightPx = { textDrawer.progress.floatValue * screenH },
+                    image = bgImage,
+                    dim = 0.34f,
+                    cornerRadiusPx = with(density) { 22.dp.toPx() },
+                    fallback = Color.Black.copy(alpha = 0.55f)
+                )
+            }
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .imePadding(),
-                color = MaterialTheme.colorScheme.surface.copy(alpha = 0.97f),
-                shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
+                    .height(with(density) { screenH.toDp() })
+                    .graphicsLayer { translationY = (1f - textDrawer.progress.floatValue) * screenH }
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            awaitDrawerDrag(
+                                state = textDrawer,
+                                down = down,
+                                travelPx = screenH,
+                                slopPx = 8.dp.toPx()
+                            )
+                        }
+                    },
+                color = if (blurEnabled) Color.Transparent else MaterialTheme.colorScheme.surface,
+                tonalElevation = 0.dp,
+                shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)
             ) {
-                Column(Modifier.padding(horizontal = 8.dp, vertical = 6.dp)) {
+                Column(
+                    Modifier
+                        .fillMaxSize()
+                        .imePadding()
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    // 把手贴着面板顶边
+                    Box(
+                        Modifier.fillMaxWidth().height(26.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            Modifier
+                                .width(44.dp)
+                                .height(3.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.55f))
+                        )
+                    }
+
+                    Spacer(Modifier.height(8.dp))
                     WatchTextField(
-                        value = editing.text,
+                        value = editing?.text ?: "",
                         onValueChange = { v ->
-                            boxes = boxes.map { if (it.id == editing.id) it.copy(text = v) else it }
+                            val id = editingId ?: return@WatchTextField
+                            boxes = boxes.map { if (it.id == id) it.copy(text = v) else it }
                         }
                     )
-                    Spacer(Modifier.height(6.dp))
+
+                    // ── 文字颜色 ──
+                    Spacer(Modifier.height(10.dp))
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "颜色",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        TextColors.forEach { c ->
+                            val picked = editing?.color == c
+                            Box(
+                                Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(c))
+                                    .border(
+                                        width = if (picked) 2.dp else 1.dp,
+                                        color = if (picked) MaterialTheme.colorScheme.primary
+                                        else Color.White.copy(alpha = 0.35f),
+                                        shape = CircleShape
+                                    )
+                                    .clickable {
+                                        val id = editingId ?: return@clickable
+                                        boxes = boxes.map {
+                                            if (it.id == id) it.copy(color = c) else it
+                                        }
+                                    }
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.height(10.dp))
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
