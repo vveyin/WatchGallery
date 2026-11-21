@@ -251,6 +251,7 @@ private fun AppNavigation(
     val selectionMode by viewModel.selectionMode.collectAsState()
     val showZoomButtons by viewModel.showZoomButtons.collectAsState()
     val blurBackdrop by viewModel.blurBackdrop.collectAsState()
+    val animateGifs by viewModel.animateGifs.collectAsState()
     // 打开大图时点击的那张缩略图位置 + 已解码的缩略图本身，供大图页做「从缩略图展开」的入场动画
     var viewerOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
     var viewerThumb by remember {
@@ -267,9 +268,9 @@ private fun AppNavigation(
 
     // ── 设置抽屉状态 ──
     val density = LocalDensity.current
-    val scope = rememberCoroutineScope()
     val collapsedY = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
-    val drawerOffset = remember { Animatable(collapsedY) }   // 初始收起（藏在屏幕下方）
+    // 三处抽屉统一用 DrawerState（0 = 收起，1 = 铺满），做法照抄 f-x
+    val settingsDrawer = rememberDrawerState(false)
     var settingsOpen by remember { mutableStateOf(false) }
     var settingsAtRoot by remember { mutableStateOf(true) }  // 设置是否在一级菜单
 
@@ -287,17 +288,16 @@ private fun AppNavigation(
 
     fun openSettings() {
         settingsOpen = true
-        scope.launch { drawerOffset.animateTo(0f, tween(300, easing = FastOutSlowInEasing)) }
+        settingsDrawer.open()
     }
 
     fun closeSettings() {
         settingsOpen = false
         settingsAtRoot = true
-        scope.launch { drawerOffset.animateTo(collapsedY, tween(280, easing = FastOutSlowInEasing)) }
+        settingsDrawer.close()
     }
 
     val current = backStack.last()
-    val below = if (backStack.size >= 2) backStack[backStack.size - 2] else null
 
     // ── 冷启动自动检查更新 ──
     // 只在整个进程第一次打开 App 时做一次：
@@ -327,17 +327,21 @@ private fun AppNavigation(
     }
 
     // 渲染某一层界面。
-    // - 每层垫不透明纯黑背景：右划露出下层时不被透视叠加，缩放条目淡出也不透出下层画面。
+    // - 除大图页外都垫不透明纯黑背景：右划露出下层时不被透视叠加。
+    // - **大图页故意透明**：入场动画期间要能看见下面那张相册，等图片长大、黑底淡入，
+    //   才轮到"列表消失"，这样点进去不会先黑一下。
     // - 底层（interactive=false）传空表冠流：避免上下两层同时滚。
     @Composable
     fun ScreenLayer(screen: Screen, interactive: Boolean) {
         val layerCrown = if (interactive && !settingsOpen) crownEvents else emptyFlow()
-        Box(Modifier.fillMaxSize().background(Color.Black)) {
+        val bg = if (screen is Screen.Viewer) Color.Transparent else Color.Black
+        Box(Modifier.fillMaxSize().background(bg)) {
             when (screen) {
                 is Screen.Gallery -> GalleryScreen(
                     viewModel = viewModel,
                     isRound = isRound,
                     crownEvents = layerCrown,
+                    animateGifs = animateGifs,
                     onPhotoClick = { photo ->
                         if (interactive) {
                             viewerOrigin = viewModel.viewerOrigin
@@ -352,6 +356,7 @@ private fun AppNavigation(
                 is Screen.Viewer -> {
                     val idx = photos.indexOfFirst { it.uri == currentPhoto?.uri }.coerceAtLeast(0)
                     PhotoViewerScreen(
+                        viewModel = viewModel,
                         photos = photos,
                         initialIndex = idx,
                         isRound = isRound,
@@ -372,6 +377,8 @@ private fun AppNavigation(
                         viewModel = viewModel,
                         isRound = isRound,
                         blurEnabled = blurBackdrop,
+                        crownEvents = layerCrown,
+                        showZoomButtons = showZoomButtons,
                         onBack = { if (interactive) goBack() }
                     )
                 }
@@ -386,20 +393,25 @@ private fun AppNavigation(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        // 主导航层（Gallery / Viewer / Editor / Update）
-        if (below != null) {
+        // ── 相册常驻最底层 ──
+        // 进大图 / 编辑 / 更新时**不卸载**它：以前是"有下层才套 SwipeBackContainer"，
+        // 退出大图时条件翻转，整棵相册树被重建 —— 缩略图全部重新解码，
+        // 屏幕上就会抽几帧（正方形里塞一张变形图，然后才恢复）。
+        // 现在相册永远在这儿，上层页面只是盖上去，退出时把它露出来即可。
+        ScreenLayer(Screen.Gallery, interactive = current is Screen.Gallery)
+
+        // 上层：栈顶那一屏。右划返回只作用在这一层，底下相册已经画好了，不再复制一份。
+        if (current !is Screen.Gallery) {
             SwipeBackContainer(
                 onBack = { goBack() },
-                backContent = { ScreenLayer(below, interactive = false) },
+                backContent = {},
                 content = { ScreenLayer(current, interactive = true) }
             )
-        } else {
-            ScreenLayer(current, interactive = true)
         }
 
         // 设置抽屉：常驻，盖在主导航层之上
         SettingsDrawer(
-            drawerOffset = drawerOffset,
+            state = settingsDrawer,
             collapsedY = collapsedY,
             canDragDown = settingsAtRoot,
             enabled = !settingsOpen && current is Screen.Gallery && !selectionMode,

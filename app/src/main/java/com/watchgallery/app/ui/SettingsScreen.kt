@@ -157,6 +157,7 @@ private fun SettingsMain(
     val showPhotoNames by viewModel.showPhotoNames.collectAsState()
     val showZoomButtons by viewModel.showZoomButtons.collectAsState()
     val blurBackdrop by viewModel.blurBackdrop.collectAsState()
+    val animateGifs by viewModel.animateGifs.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
     val hiddenFolders by viewModel.hiddenFolders.collectAsState()
     val report by viewModel.scanReport.collectAsState()
@@ -233,6 +234,16 @@ private fun SettingsMain(
                 else "关 · 只用双指或表冠缩放",
                 onClick = { viewModel.setShowZoomButtons(!showZoomButtons) },
                 itemKey = "row_zoom"
+            )
+        }
+        item(key = "row_gif") {
+            SettingButton(
+                icon = Icons.Filled.Gif,
+                title = "列表显示动图",
+                subtitle = if (animateGifs) "开 · 列表里的 GIF 会动"
+                else "关 · 列表只显示首帧，点开仍是动图",
+                onClick = { viewModel.setAnimateGifs(!animateGifs) },
+                itemKey = "row_gif"
             )
         }
         item(key = "row_blur") {

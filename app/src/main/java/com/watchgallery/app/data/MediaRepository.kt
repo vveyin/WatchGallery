@@ -118,6 +118,13 @@ data class ScanReport(
 
 data class ScanResult(val photos: List<Photo>, val report: ScanReport)
 
+/** 重命名的三种结局：成功 / 需要系统授权 / 失败 */
+sealed class RenameOutcome {
+    data object Ok : RenameOutcome()
+    class NeedPermission(val sender: IntentSender) : RenameOutcome()
+    data object Failed : RenameOutcome()
+}
+
 /**
  * 媒体库仓库 —— 通过 MediaStore 扫描设备上的图片，对标手机相册的数据源。
  *
@@ -627,8 +634,54 @@ class MediaRepository(private val context: Context) {
         toAlbums(loadPhotos())
     }
 
-    /** 读取图片真实尺寸（部分 MediaStore 记录宽高为 0 时兜底） */
-    fun readImageSize(uri: Uri): Size? = try {
+    /**
+     * 重命名一张照片。
+     *
+     * - 私有导入目录（file://）直接改文件名；
+     * - MediaStore 里的照片改 DISPLAY_NAME（保留原扩展名）；
+     * - Android 11 起改别人的照片要用户点头，抛 SecurityException 时
+     *   用 `createWriteRequest` 生成系统确认弹窗，由调用方拉起、同意后再试一次。
+     */
+    suspend fun rename(photo: Photo, newName: String): RenameOutcome = withContext(Dispatchers.IO) {
+        val name = newName.trim()
+        if (name.isEmpty()) return@withContext RenameOutcome.Failed
+        val ext = photo.displayName.substringAfterLast('.', "")
+        val full = if (ext.isNotEmpty() && !name.endsWith(".$ext", ignoreCase = true)) {
+            "$name.$ext"
+        } else {
+            name
+        }
+        try {
+            when (photo.uri.scheme) {
+                "file" -> {
+                    val f = File(photo.uri.path ?: "")
+                    if (!f.exists()) return@withContext RenameOutcome.Failed
+                    val target = File(f.parentFile, full)
+                    if (f.renameTo(target)) RenameOutcome.Ok else RenameOutcome.Failed
+                }
+                else -> {
+                    val values = android.content.ContentValues().apply {
+                        put(MediaStore.MediaColumns.DISPLAY_NAME, full)
+                    }
+                    val n = context.contentResolver.update(photo.uri, values, null, null)
+                    if (n > 0) RenameOutcome.Ok else RenameOutcome.Failed
+                }
+            }
+        } catch (e: SecurityException) {
+            val sender = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                runCatching {
+                    MediaStore.createWriteRequest(context.contentResolver, listOf(photo.uri)).intentSender
+                }.getOrNull()
+            } else {
+                null
+            }
+            if (sender != null) RenameOutcome.NeedPermission(sender) else RenameOutcome.Failed
+        } catch (e: Exception) {
+            RenameOutcome.Failed
+        }
+    }
+
+    /** 读取图片真实尺寸（部分 MediaStore 记录宽高为 0 时兜底） */    fun readImageSize(uri: Uri): Size? = try {
         context.contentResolver.openInputStream(uri)?.use { input ->
             val opts = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
             android.graphics.BitmapFactory.decodeStream(input, null, opts)

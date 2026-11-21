@@ -196,6 +196,20 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 图片列表里的 GIF 要不要动。
+     *
+     * 只影响**列表**：点开看大图时 GIF 一律按动图播，不受这个开关约束 ——
+     * 用户要的是"列表里安静一点，点开还是动的"。
+     */
+    private val _animateGifs = MutableStateFlow(prefs.getBoolean("animate_gifs", true))
+    val animateGifs: StateFlow<Boolean> = _animateGifs
+
+    fun setAnimateGifs(on: Boolean) {
+        _animateGifs.value = on
+        prefs.edit().putBoolean("animate_gifs", on).apply()
+    }
+
+    /**
      * 最近一次点击的缩略图在屏幕上的矩形（px，相对窗口根布局）。
      * 只用于大图页的入场动画：从缩略图位置放大到全屏。不做状态观察，读一次即可。
      */
@@ -495,6 +509,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         flipV: Boolean,
         cropRect: android.graphics.RectF?,
         strokes: List<Stroke>,
+        texts: List<com.watchgallery.app.edit.TextStamp> = emptyList(),
         onDone: (Boolean) -> Unit
     ) {
         viewModelScope.launch {
@@ -506,6 +521,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 if (flipV) bmp = ImageEditor.flip(bmp, false)
                 bmp = ImageEditor.applyAdjustments(bmp, adjustments)
                 if (strokes.isNotEmpty()) bmp = ImageEditor.drawStrokes(bmp, strokes)
+                if (texts.isNotEmpty()) bmp = ImageEditor.drawTexts(bmp, texts)
 
                 val name = "WatchGallery_${System.currentTimeMillis()}.png"
                 val uri = ImageSaver.saveToGallery(getApplication(), bmp, name)
@@ -519,6 +535,33 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun clearMessage() { _message.value = null }
+
+    /**
+     * 重命名：成功 → 刷新列表；需要系统授权 → 把 IntentSender 交给界面去拉起。
+     */
+    fun renamePhoto(
+        photo: Photo,
+        newName: String,
+        onResult: (ok: Boolean, needPermission: IntentSender?) -> Unit
+    ) {
+        viewModelScope.launch {
+            when (val r = repo.rename(photo, newName)) {
+                is com.watchgallery.app.data.RenameOutcome.Ok -> {
+                    _message.value = "已重命名为 $newName"
+                    refresh()
+                    onResult(true, null)
+                }
+                is com.watchgallery.app.data.RenameOutcome.NeedPermission -> {
+                    onResult(false, r.sender)
+                }
+                else -> {
+                    _message.value = "重命名失败（系统不允许修改这张照片）"
+                    onResult(false, null)
+                }
+            }
+        }
+    }
+
 
     /** 解码 Uri 为 Bitmap（按最大边采样，避免 OOM） */
     fun decodeUri(uri: Uri, maxSize: Int = 1600): Bitmap? {

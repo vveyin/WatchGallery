@@ -94,6 +94,7 @@ fun GalleryScreen(
     viewModel: GalleryViewModel,
     isRound: Boolean,
     crownEvents: Flow<Float> = emptyFlow(),
+    animateGifs: Boolean = true,
     onPhotoClick: (Photo) -> Unit,
     onOpenSettings: () -> Unit = {},
     onCheckUpdate: () -> Unit = {}
@@ -216,6 +217,7 @@ fun GalleryScreen(
                                     items = folderPhotos,
                                     columns = gridColumns,
                                     crownEvents = crownEvents,
+                                    animateGifs = animateGifs,
                                     showNames = showPhotoNames,
                                     hasMore = false,
                                     totalCount = folderPhotos.size,
@@ -252,6 +254,7 @@ fun GalleryScreen(
                     items = photos,
                     columns = gridColumns,
                     crownEvents = crownEvents,
+                    animateGifs = animateGifs,
                     showNames = showPhotoNames,
                     hasMore = visibleCount < totalCount,
                     totalCount = totalCount,
@@ -374,6 +377,7 @@ private fun ScalingPhotoList(
     items: List<Photo>,
     columns: Int,
     crownEvents: Flow<Float>,
+    animateGifs: Boolean,
     showNames: Boolean,
     hasMore: Boolean,
     totalCount: Int,
@@ -394,6 +398,7 @@ private fun ScalingPhotoList(
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
+    val context = LocalContext.current
 
     // 多选慢速拖动产生的滚动增量：手势回调处在受限协程作用域，不能直接调用
     // gridState.scroll{}，故把增量投递到普通协程里再执行滚动。
@@ -494,8 +499,18 @@ private fun ScalingPhotoList(
                 DisposableEffect(photo.uri) {
                     onDispose { cellRects.remove(photo.uri.toString()) }
                 }
-                // 缩略图 painter：既给网格画，也给点击大图时的入场动画当第一帧用
-                val thumbPainter = rememberAsyncImagePainter(photo.uri)
+                // 缩略图：按单元格像素解码（不按原图），GIF 是否动由设置决定。
+                // 关闭动图时强制走 BitmapFactoryDecoder —— 它只解第一帧，
+                // 于是列表里是静态封面，点开看大图仍然是动的。
+                val cellPx = (screenWidthPx / columns).toInt().coerceAtLeast(96)
+                val thumbModel = remember(photo.uri, animateGifs, cellPx) {
+                    val b = coil.request.ImageRequest.Builder(context)
+                        .data(photo.uri)
+                        .size(cellPx, cellPx)
+                    if (!animateGifs) b.decoderFactory(coil.decode.BitmapFactoryDecoder.Factory())
+                    b.build()
+                }
+                val thumbPainter = rememberAsyncImagePainter(thumbModel)
                 SideEffect { painterByUri[photo.uri.toString()] = thumbPainter }
                 DisposableEffect(photo.uri) {
                     onDispose { painterByUri.remove(photo.uri.toString()) }

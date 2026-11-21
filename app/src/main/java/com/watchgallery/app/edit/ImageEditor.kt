@@ -34,6 +34,20 @@ data class Stroke(
     val width: Float
 )
 
+/**
+ * 文本框（保存时烘焙进图片）。
+ *
+ * 坐标与字号都是**原图像素**，和编辑页预览共用同一套换算，
+ * 所以预览里框在哪儿，保存出来就在哪儿。
+ */
+data class TextStamp(
+    val x: Float,
+    val y: Float,
+    val text: String,
+    val sizePx: Float,
+    val color: Int
+)
+
 object ImageEditor {
 
     /** 应用色彩调整 + 滤镜，返回新 Bitmap */
@@ -178,6 +192,28 @@ object ImageEditor {
                 path.lineTo(stroke.points[i].x, stroke.points[i].y)
             }
             canvas.drawPath(path, paint)
+        }
+        return result
+    }
+
+    /** 在 Bitmap 上绘制文本框（与编辑页预览同一套坐标：左上角 + 字号，单位都是原图像素） */
+    fun drawTexts(source: Bitmap, texts: List<TextStamp>): Bitmap {
+        if (texts.isEmpty()) return source
+        val result = source.copy(source.config ?: Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(result)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+        }
+        for (t in texts) {
+            if (t.text.isBlank()) continue
+            paint.textSize = t.sizePx
+            paint.color = t.color
+            val lines = t.text.split('\n')
+            val lineH = t.sizePx * 1.25f
+            lines.forEachIndexed { i, line ->
+                // y 是文本框左上角，绘制时换算到基线
+                canvas.drawText(line, t.x, t.y + (-paint.ascent()) + i * lineH, paint)
+            }
         }
         return result
     }
