@@ -1,18 +1,43 @@
 package com.watchgallery.app.ui
 
-import android.content.Context
-import androidx.compose.foundation.ScrollState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.scrollBy
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Download
+import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.InstallMobile
+import androidx.compose.material.icons.filled.NewReleases
+import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -39,8 +64,13 @@ private sealed class UpdateState {
 }
 
 /**
- * 检查更新页 —— 圆屏安全区布局。
- * 流程：检查 → 发现新版本 → 下载（进度条）→ 安装按钮。
+ * 检查更新页 —— 视觉与设置页统一：
+ *
+ *  - 同样的缩放滚动列表（表冠可滚、圆屏自动避开弧边）；
+ *  - 一张淡灰底的「状态卡」：圆角图标 + 标题 + 说明，版本号与更新说明都放在卡里；
+ *  - 操作用满宽药丸按钮，与设置里的条目不打架、不再出现整块紫色大按钮。
+ *
+ * 流程不变：检查 → 发现新版本 → 下载（进度条在卡内）→ 安装。
  * 安装按钮始终可点，即使上次安装失败也能重试（APK 保留在稳定路径）。
  */
 @Composable
@@ -53,6 +83,7 @@ fun UpdateScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
+
     // 启动检测已经把新版本信息放进 ViewModel：直接展示「发现新版本」，不重复请求
     val pendingUpdate by viewModel.pendingUpdate.collectAsState()
     LaunchedEffect(pendingUpdate) {
@@ -61,8 +92,6 @@ fun UpdateScreen(
             state = UpdateState.Found(it)
         }
     }
-    // 表冠驱动滚动：更新说明较长时可像其它页面一样用表冠浏览
-    val scrollState = rememberCrownScrollState(crownEvents)
 
     // 已有更新包时直接给出「安装」入口，避免安装失败后无法再次安装
     val existingApk = remember { ApkDownloader.updateApkFile(context) }
@@ -80,7 +109,8 @@ fun UpdateScreen(
                     if (UpdateChecker.isNewer(
                             UpdateChecker.versionNumber(info.versionName),
                             UpdateChecker.versionNumber(BuildConfig.VERSION_NAME)
-                        )) {
+                        )
+                    ) {
                         UpdateState.Found(info)
                     } else {
                         UpdateState.UpToDate(info.versionName)
@@ -108,164 +138,226 @@ fun UpdateScreen(
         if (existingApk.exists()) ApkInstaller.install(context, existingApk)
     }
 
-    RoundSafeArea(isRound) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                .verticalScroll(scrollState),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            UpdateHeader(onBack)
-            Spacer(Modifier.height(8.dp))
+    val localVer = BuildConfig.VERSION_NAME
 
+    ScalingScrollColumn(
+        crownEvents = crownEvents,
+        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 56.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        item(key = "upd_title") {
+            Box(
+                Modifier.fillMaxWidth().height(28.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "检查更新",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+            }
+        }
+
+        // ── 状态卡：所有版本信息都收在这一张卡里 ──
+        item(key = "upd_card") {
             when (val s = state) {
-                UpdateState.Idle -> {
-                    StatusIcon(Icons.Filled.SystemUpdate)
-                    Text("检查新版本", style = MaterialTheme.typography.headlineMedium)
-                    Spacer(Modifier.height(6.dp))
-                    Text("当前版本 v${BuildConfig.VERSION_NAME}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(16.dp))
-                    PrimaryButton("检查更新") { checkUpdate() }
-                }
-                UpdateState.Checking -> {
-                    CircularProgressIndicator()
-                    Spacer(Modifier.height(12.dp))
-                    Text("正在检查更新…", style = MaterialTheme.typography.titleMedium)
-                }
-                is UpdateState.UpToDate -> {
-                    StatusIcon(Icons.Filled.CheckCircle)
-                    Text("已是最新版本", style = MaterialTheme.typography.headlineMedium)
-                    Spacer(Modifier.height(6.dp))
-                    Text("本机 v${BuildConfig.VERSION_NAME} · 线上 v${s.remoteName}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(16.dp))
-                    PrimaryButton("再次检查") { checkUpdate() }
-                }
-                is UpdateState.Found -> {
-                    StatusIcon(Icons.Filled.NewReleases)
-                    Text("发现新版本", style = MaterialTheme.typography.headlineMedium)
-                    Spacer(Modifier.height(6.dp))
-                    Text("v${BuildConfig.VERSION_NAME} → v${s.info.versionName}",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.primary)
-                    if (s.info.releaseNotes.isNotBlank()) {
-                        Spacer(Modifier.height(8.dp))
-                        Surface(
-                            color = MaterialTheme.colorScheme.surfaceVariant,
-                            shape = RoundedCornerShape(12.dp)
-                        ) {
-                            Text(
-                                s.info.releaseNotes.take(200),
-                                style = MaterialTheme.typography.labelMedium,
-                                modifier = Modifier.padding(12.dp)
-                            )
-                        }
-                    }
-                    Spacer(Modifier.height(16.dp))
-                    PrimaryButton("下载更新") { download(s.info) }
-                }
+                UpdateState.Idle -> StatusCard(
+                    icon = Icons.Filled.SystemUpdate,
+                    title = "检查新版本",
+                    subtitle = "当前版本 v$localVer",
+                    footnote = "国内走 Gitee，失败自动切 GitHub"
+                )
+                UpdateState.Checking -> StatusCard(
+                    icon = Icons.Filled.SystemUpdate,
+                    title = "正在检查更新…",
+                    subtitle = "当前版本 v$localVer",
+                    loading = true
+                )
+                is UpdateState.UpToDate -> StatusCard(
+                    icon = Icons.Filled.CheckCircle,
+                    title = "已是最新版本",
+                    subtitle = "本机 v$localVer · 线上 v${s.remoteName}"
+                )
+                is UpdateState.Found -> StatusCard(
+                    icon = Icons.Filled.NewReleases,
+                    title = "发现新版本 v${s.info.versionName}",
+                    subtitle = "v$localVer → v${s.info.versionName}",
+                    footnote = s.info.releaseNotes.take(160).ifBlank { null }
+                )
                 is UpdateState.Downloading -> {
-                    StatusIcon(Icons.Filled.Download)
-                    Text("正在下载 v${s.info.versionName}",
-                        style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(12.dp))
                     val percent = if (s.total > 0) {
                         (s.downloaded.toFloat() / s.total).coerceIn(0f, 1f)
                     } else null
-                    if (percent != null) {
-                        LinearProgressIndicator(
-                            progress = { percent },
-                            modifier = Modifier.fillMaxWidth().height(10.dp)
-                                .clip(RoundedCornerShape(6.dp))
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text("${(percent * 100).toInt()}%  ${fmtMb(s.downloaded)} / ${fmtMb(s.total)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    } else {
-                        // 服务器没给总大小：用不定态进度条 + 已下载字节，能看出在动
-                        LinearProgressIndicator(
-                            modifier = Modifier.fillMaxWidth().height(10.dp)
-                                .clip(RoundedCornerShape(6.dp))
-                        )
-                        Spacer(Modifier.height(8.dp))
-                        Text("已下载 ${fmtMb(s.downloaded)}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
+                    StatusCard(
+                        icon = Icons.Filled.Download,
+                        title = "正在下载 v${s.info.versionName}",
+                        subtitle = if (percent != null) {
+                            "${(percent * 100).toInt()}%  ${fmtMb(s.downloaded)} / ${fmtMb(s.total)}"
+                        } else {
+                            "已下载 ${fmtMb(s.downloaded)}"
+                        },
+                        progress = percent
+                    )
                 }
-                is UpdateState.Ready -> {
-                    StatusIcon(Icons.Filled.InstallMobile)
-                    Text("下载完成", style = MaterialTheme.typography.headlineMedium)
-                    Spacer(Modifier.height(6.dp))
-                    Text("v${s.info.versionName} 已就绪",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    Spacer(Modifier.height(16.dp))
-                    // 安装按钮始终可点：安装失败返回后可再次点击重装
-                    PrimaryButton("安装") { install() }
-                    Spacer(Modifier.height(8.dp))
-                    Text("若安装失败，可返回后再次点击安装",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        textAlign = TextAlign.Center)
-                }
-                is UpdateState.Error -> {
-                    StatusIcon(Icons.Filled.ErrorOutline)
-                    Text("出错了", style = MaterialTheme.typography.headlineMedium)
-                    Spacer(Modifier.height(6.dp))
-                    Text(s.message, style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.error, textAlign = TextAlign.Center)
-                    Spacer(Modifier.height(16.dp))
-                    // 即使检查/下载失败，只要本地有包也给安装入口
-                    if (existingApk.exists()) {
+                is UpdateState.Ready -> StatusCard(
+                    icon = Icons.Filled.InstallMobile,
+                    title = "下载完成",
+                    subtitle = "v${s.info.versionName} 已就绪，点击下方安装",
+                    footnote = "安装失败可直接再点一次"
+                )
+                is UpdateState.Error -> StatusCard(
+                    icon = Icons.Filled.ErrorOutline,
+                    title = "检查失败",
+                    subtitle = s.message,
+                    isError = true
+                )
+            }
+        }
+
+        // ── 主操作 ──
+        when (val s = state) {
+            UpdateState.Idle -> item(key = "upd_act") {
+                PrimaryButton("检查更新") { checkUpdate() }
+            }
+            UpdateState.Checking -> Unit
+            is UpdateState.UpToDate -> item(key = "upd_act") {
+                PrimaryButton("再次检查") { checkUpdate() }
+            }
+            is UpdateState.Found -> item(key = "upd_act") {
+                PrimaryButton("下载更新") { download(s.info) }
+            }
+            is UpdateState.Downloading -> Unit
+            is UpdateState.Ready -> item(key = "upd_act") {
+                PrimaryButton("安装") { install() }
+            }
+            is UpdateState.Error -> {
+                if (existingApk.exists()) {
+                    item(key = "upd_act_install") {
                         PrimaryButton("安装已下载的版本") { install() }
-                        Spacer(Modifier.height(8.dp))
                     }
-                    PrimaryButton("重试") { checkUpdate() }
+                    item(key = "upd_act_retry") {
+                        SecondaryButton("重新检查") { checkUpdate() }
+                    }
+                } else {
+                    item(key = "upd_act") {
+                        PrimaryButton("重试") { checkUpdate() }
+                    }
                 }
             }
         }
     }
 }
 
+/**
+ * 状态卡：图标徽章 + 标题 + 说明（可选副注）+ 可选进度条。
+ * 底色用 surfaceVariant，与设置条目一致；错误态换成 errorContainer，一眼能区分。
+ */
 @Composable
-@Suppress("UNUSED_PARAMETER")
-private fun UpdateHeader(onBack: () -> Unit) {
-    // 返回改为边缘右划手势
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-        Text("检查更新", style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onBackground)
-    }
-}
+private fun StatusCard(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    footnote: String? = null,
+    progress: Float? = null,
+    loading: Boolean = false,
+    isError: Boolean = false
+) {
+    val badgeBg = if (isError) MaterialTheme.colorScheme.errorContainer
+    else MaterialTheme.colorScheme.primaryContainer
+    val badgeFg = if (isError) MaterialTheme.colorScheme.onErrorContainer
+    else MaterialTheme.colorScheme.primary
 
-@Composable
-private fun StatusIcon(icon: ImageVector) {
-    Box(
-        Modifier
-            .size(64.dp)
-            .background(MaterialTheme.colorScheme.primaryContainer, RoundedCornerShape(20.dp)),
-        Alignment.Center
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        color = MaterialTheme.colorScheme.surfaceVariant,
+        shape = RoundedCornerShape(20.dp)
     ) {
-        Icon(icon, null, tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(34.dp))
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 14.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Box(
+                Modifier
+                    .size(42.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(badgeBg),
+                contentAlignment = Alignment.Center
+            ) {
+                if (loading) {
+                    CircularProgressIndicator(
+                        Modifier.size(20.dp),
+                        strokeWidth = 2.dp,
+                        color = badgeFg
+                    )
+                } else {
+                    Icon(icon, contentDescription = null, tint = badgeFg, modifier = Modifier.size(22.dp))
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                title,
+                style = MaterialTheme.typography.labelLarge,
+                color = if (isError) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center
+            )
+
+            if (progress != null) {
+                Spacer(Modifier.height(10.dp))
+                LinearProgressIndicator(
+                    progress = { progress },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(3.dp))
+                )
+            }
+
+            if (!footnote.isNullOrBlank()) {
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    footnote,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
     }
-    Spacer(Modifier.height(12.dp))
 }
 
+/** 满宽药丸主按钮（与设置里的条目同宽、同圆角语言） */
 @Composable
 private fun PrimaryButton(text: String, onClick: () -> Unit) {
     Button(
         onClick = onClick,
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(50.dp),
-        shape = RoundedCornerShape(14.dp)
+        modifier = Modifier.fillMaxWidth().height(44.dp),
+        contentPadding = PaddingValues(horizontal = 16.dp)
     ) {
-        Text(text, style = MaterialTheme.typography.titleMedium)
+        Text(text, style = MaterialTheme.typography.labelLarge)
+    }
+}
+
+/** 次要操作：描边按钮 */
+@Composable
+private fun SecondaryButton(text: String, onClick: () -> Unit) {
+    OutlinedButton(
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth().height(44.dp),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+        colors = ButtonDefaults.outlinedButtonColors(
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+        ),
+        contentPadding = PaddingValues(horizontal = 16.dp)
+    ) {
+        Text(text, style = MaterialTheme.typography.labelLarge)
     }
 }
 
@@ -274,15 +366,4 @@ private fun fmtMb(bytes: Long): String {
     if (bytes <= 0) return "0 MB"
     val mb = bytes / 1024.0 / 1024.0
     return String.format("%.1f MB", mb)
-}
-
-/** 表冠可滚动的 ScrollState：收到表冠增量就滚动对应距离 */
-@Composable
-private fun rememberCrownScrollState(crownEvents: Flow<Float>): ScrollState {
-    val state = rememberScrollState()
-    // 表冠滚动：照搬 f-x，事件到达直接 scrollBy，即时跟手、无阻尼
-    CrownScroll(crownEvents) { step ->
-        state.scrollBy(step)
-    }
-    return state
 }

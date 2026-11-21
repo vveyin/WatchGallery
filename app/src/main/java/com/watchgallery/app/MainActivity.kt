@@ -249,6 +249,9 @@ private fun AppNavigation(
     // 大图翻页用「当前上下文」的列表：在文件夹里打开就翻该文件夹，否则翻全部
     val photos by viewModel.viewerPhotos.collectAsState()
     val selectionMode by viewModel.selectionMode.collectAsState()
+    val showZoomButtons by viewModel.showZoomButtons.collectAsState()
+    // 打开大图时点击的那张缩略图位置，供大图页做「从缩略图展开」的入场动画
+    var viewerOrigin by remember { mutableStateOf<androidx.compose.ui.geometry.Rect?>(null) }
 
     val context = LocalContext.current
     val isRound = remember {
@@ -323,7 +326,11 @@ private fun AppNavigation(
                     isRound = isRound,
                     crownEvents = layerCrown,
                     onPhotoClick = { photo ->
-                        if (interactive) { currentPhoto = photo; navigate(Screen.Viewer) }
+                        if (interactive) {
+                            viewerOrigin = viewModel.viewerOrigin
+                            currentPhoto = photo
+                            navigate(Screen.Viewer)
+                        }
                     },
                     onOpenSettings = { if (interactive) openSettings() },
                     onCheckUpdate = { if (interactive) navigate(Screen.Update) }
@@ -335,6 +342,8 @@ private fun AppNavigation(
                         initialIndex = idx,
                         isRound = isRound,
                         crownEvents = layerCrown,
+                        showZoomButtons = showZoomButtons,
+                        origin = viewerOrigin,
                         onBack = { if (interactive) goBack() },
                         onEdit = { photo ->
                             if (interactive) { currentPhoto = photo; navigate(Screen.Editor) }

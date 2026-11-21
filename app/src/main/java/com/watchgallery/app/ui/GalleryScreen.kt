@@ -223,6 +223,7 @@ fun GalleryScreen(
                                     selectedUris = selectedUris,
                                     onLoadMore = {},
                                     onPhotoClick = onPhotoClick,
+                                    onRecordOrigin = { viewModel.viewerOrigin = it },
                                     onOpenPhoto = { uri ->
                                         folderPhotos.firstOrNull { it.uri.toString() == uri }?.let(onPhotoClick)
                                     },
@@ -255,6 +256,7 @@ fun GalleryScreen(
                     selectedUris = selectedUris,
                     onLoadMore = { viewModel.loadMore() },
                     onPhotoClick = onPhotoClick,
+                    onRecordOrigin = { viewModel.viewerOrigin = it },
                     onOpenPhoto = { uri ->
                         photos.firstOrNull { it.uri.toString() == uri }?.let(onPhotoClick)
                     },
@@ -373,6 +375,7 @@ private fun ScalingPhotoList(
     selectedUris: Set<String>,
     onLoadMore: () -> Unit,
     onPhotoClick: (Photo) -> Unit,
+    onRecordOrigin: (Rect?) -> Unit,
     onOpenPhoto: (String) -> Unit,
     onLongPress: (String) -> Unit,
     onToggle: (String) -> Unit,
@@ -578,7 +581,11 @@ private fun ScalingPhotoList(
                                             longPressed.value = true
                                             onLongPress(photo.uri.toString())
                                         },
-                                        onTap = { onPhotoClick(photo) }
+                                        onTap = {
+                                            // 记下这张缩略图在屏幕上的位置：大图页会从这里放大展开
+                                            onRecordOrigin(cellRects[photo.uri.toString()])
+                                            onPhotoClick(photo)
+                                        }
                                     )
                                 }
                         )
@@ -640,6 +647,7 @@ private fun ScalingPhotoList(
                                         if (cell != null && inCheckCircle(cell, p, circleInsetPx, circleRadiusPx)) {
                                             onToggle(startUri)
                                         } else {
+                                            onRecordOrigin(cell)
                                             onOpenPhoto(startUri)
                                         }
                                     }

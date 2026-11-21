@@ -116,6 +116,7 @@ private fun SettingsMain(
     val crownSpeed by viewModel.crownSpeed.collectAsState()
     val gridColumns by viewModel.gridColumns.collectAsState()
     val showPhotoNames by viewModel.showPhotoNames.collectAsState()
+    val showZoomButtons by viewModel.showZoomButtons.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
     val hiddenFolders by viewModel.hiddenFolders.collectAsState()
     val report by viewModel.scanReport.collectAsState()
@@ -127,7 +128,7 @@ private fun SettingsMain(
 
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "settings_title") {
-            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("settings_title", scale = false),
+            Box(Modifier.fillMaxWidth().height(28.dp).settingItem("settings_title", scale = false),
                 contentAlignment = Alignment.Center) {
                 Text("设置", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
@@ -178,6 +179,16 @@ private fun SettingsMain(
                 subtitle = if (showPhotoNames) "开 · 照片底部显示文件名" else "关 · 只看照片",
                 onClick = { viewModel.setShowPhotoNames(!showPhotoNames) },
                 itemKey = "row_names"
+            )
+        }
+        item(key = "row_zoom") {
+            SettingButton(
+                icon = if (showZoomButtons) Icons.Filled.ZoomIn else Icons.Filled.ZoomOut,
+                title = "缩放按键",
+                subtitle = if (showZoomButtons) "开 · 查看大图时顶部显示放大/缩小"
+                else "关 · 只用双指或表冠缩放",
+                onClick = { viewModel.setShowZoomButtons(!showZoomButtons) },
+                itemKey = "row_zoom"
             )
         }
         item(key = "row_theme") {
@@ -267,14 +278,14 @@ private fun CrownSettings(
 
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "crown_title") {
-            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("crown_title", scale = false),
+            Box(Modifier.fillMaxWidth().height(28.dp).settingItem("crown_title", scale = false),
                 contentAlignment = Alignment.Center) {
                 Text("表冠适配", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
             }
         }
         item(key = "crown_desc") {
-            Box(Modifier.fillMaxWidth().scalingItem("crown_desc", scale = false)) {
+            Box(Modifier.fillMaxWidth().settingItem("crown_desc", scale = false)) {
                 Text(
                     "不同手表表冠上报方式不同，选错会导致表冠无反应。",
                     style = MaterialTheme.typography.labelMedium,
@@ -285,7 +296,7 @@ private fun CrownSettings(
             }
         }
         item(key = "crown_mode_label") {
-            Box(Modifier.fillMaxWidth().scalingItem("crown_mode_label", scale = false)) {
+            Box(Modifier.fillMaxWidth().settingItem("crown_mode_label", scale = false)) {
                 Text("模式", style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary)
             }
@@ -298,13 +309,13 @@ private fun CrownSettings(
                         selected = mode == m,
                         label = "${m.label} — ${m.description}",
                         onClick = { mode = m; commit() },
-                        modifier = Modifier.fillMaxWidth().height(42.dp).scalingItem(mk)
+                        modifier = Modifier.fillMaxWidth().height(42.dp).settingItem(mk)
                     )
                 }
             }
         }
         item(key = "crown_speed") {
-            Box(Modifier.fillMaxWidth().scalingItem("crown_speed", scale = false)) {
+            Box(Modifier.fillMaxWidth().settingItem("crown_speed", scale = false)) {
                 Column {
                     Text("灵敏度  ${formatSpeed(speed)}x",
                         style = MaterialTheme.typography.titleSmall,
@@ -333,7 +344,7 @@ private fun CrownSettings(
             }
         }
         item(key = "crown_test") {
-            Box(Modifier.fillMaxWidth().scalingItem("crown_test", scale = false)) {
+            Box(Modifier.fillMaxWidth().settingItem("crown_test", scale = false)) {
                 Column {
                     Text("表冠测试", style = MaterialTheme.typography.titleSmall,
                         color = MaterialTheme.colorScheme.primary)
@@ -364,7 +375,7 @@ private fun ThemeSettings(
     )
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "theme_title") {
-            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("theme_title", scale = false),
+            Box(Modifier.fillMaxWidth().height(28.dp).settingItem("theme_title", scale = false),
                 contentAlignment = Alignment.Center) {
                 Text("主题", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
@@ -378,7 +389,7 @@ private fun ThemeSettings(
                         selected = current == mode,
                         label = label,
                         onClick = { viewModel.setThemeMode(mode) },
-                        modifier = Modifier.fillMaxWidth().height(42.dp).scalingItem(mk)
+                        modifier = Modifier.fillMaxWidth().height(42.dp).settingItem(mk)
                     )
                 }
             }
@@ -406,7 +417,7 @@ private fun SettingButton(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(46.dp)
-                .scalingItem(itemKey),
+                .settingItem(itemKey),
             colors = ButtonDefaults.buttonColors(
                 containerColor = MaterialTheme.colorScheme.surfaceVariant,
                 contentColor = MaterialTheme.colorScheme.onSurface
@@ -478,14 +489,14 @@ private fun HiddenFoldersSettings(
 
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "hidden_title") {
-            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("hidden_title", scale = false),
+            Box(Modifier.fillMaxWidth().height(28.dp).settingItem("hidden_title", scale = false),
                 contentAlignment = Alignment.Center) {
                 Text("隐藏文件夹", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
             }
         }
         item(key = "hidden_desc") {
-            Box(Modifier.fillMaxWidth().scalingItem("hidden_desc", scale = false)) {
+            Box(Modifier.fillMaxWidth().settingItem("hidden_desc", scale = false)) {
                 Text(
                     "选中后该文件夹的照片在平铺列表和文件夹视图里都不显示，子文件夹一起隐藏。再点一次恢复。",
                     style = MaterialTheme.typography.labelSmall,
@@ -497,7 +508,7 @@ private fun HiddenFoldersSettings(
         }
         if (folders.isEmpty()) {
             item(key = "hidden_empty") {
-                Box(Modifier.fillMaxWidth().scalingItem("hidden_empty", scale = false)) {
+                Box(Modifier.fillMaxWidth().settingItem("hidden_empty", scale = false)) {
                     Text("还没有识别到文件夹", style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
@@ -513,7 +524,7 @@ private fun HiddenFoldersSettings(
                     val isHidden = selfHidden || inherited
                     Button(
                         onClick = { if (!inherited) viewModel.toggleFolderHidden(folder.path) },
-                        modifier = Modifier.fillMaxWidth().height(48.dp).scalingItem(mk),
+                        modifier = Modifier.fillMaxWidth().height(48.dp).settingItem(mk),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.surfaceVariant,
                             contentColor = if (isHidden) MaterialTheme.colorScheme.error
@@ -564,20 +575,20 @@ private fun ScanDiagSettings(
 
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "diag_title") {
-            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("diag_title", scale = false),
+            Box(Modifier.fillMaxWidth().height(28.dp).settingItem("diag_title", scale = false),
                 contentAlignment = Alignment.Center) {
                 Text("扫描诊断", style = MaterialTheme.typography.titleMedium,
                     color = MaterialTheme.colorScheme.onBackground)
             }
         }
         item(key = "diag_count") {
-            Box(Modifier.fillMaxWidth().scalingItem("diag_count", scale = false)) {
+            Box(Modifier.fillMaxWidth().settingItem("diag_count", scale = false)) {
                 Text("共 ${photos.size} 张", style = MaterialTheme.typography.titleSmall,
                     color = MaterialTheme.colorScheme.primary)
             }
         }
         item(key = "diag_lines") {
-            Box(Modifier.fillMaxWidth().scalingItem("diag_lines", scale = false)) {
+            Box(Modifier.fillMaxWidth().settingItem("diag_lines", scale = false)) {
                 Column {
                     DiagLine("Android 版本", report.sdk.toString())
                     DiagLine("读取权限", if (report.permissionGranted) "已授予" else "未授予")
@@ -591,7 +602,7 @@ private fun ScanDiagSettings(
         }
         if (report.roots.isNotEmpty()) {
             item(key = "diag_roots") {
-                Box(Modifier.fillMaxWidth().scalingItem("diag_roots", scale = false)) {
+                Box(Modifier.fillMaxWidth().settingItem("diag_roots", scale = false)) {
                     Column {
                         Spacer(Modifier.height(8.dp))
                         Text("扫描目录", style = MaterialTheme.typography.labelLarge,
@@ -604,7 +615,7 @@ private fun ScanDiagSettings(
         }
         if (report.errors.isNotEmpty()) {
             item(key = "diag_errors") {
-                Box(Modifier.fillMaxWidth().scalingItem("diag_errors", scale = false)) {
+                Box(Modifier.fillMaxWidth().settingItem("diag_errors", scale = false)) {
                     Column {
                         Spacer(Modifier.height(8.dp))
                         Text("异常", style = MaterialTheme.typography.labelLarge,
@@ -619,7 +630,7 @@ private fun ScanDiagSettings(
         item(key = "diag_rescan") {
             Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                 Button(onClick = { viewModel.refresh() },
-                    modifier = Modifier.fillMaxWidth().height(42.dp).scalingItem("diag_rescan")) {
+                    modifier = Modifier.fillMaxWidth().height(42.dp).settingItem("diag_rescan")) {
                     Text("重新扫描")
                 }
             }
@@ -639,6 +650,17 @@ private fun DiagLine(label: String, value: String) {
             color = MaterialTheme.colorScheme.onBackground)
     }
 }
+
+/**
+ * 设置列表条目修饰符 —— 不再做 Wear OS 那种「居中放大、上下边缘缩小淡出」的形变。
+ *
+ * 这个形变在滚动时会让人误以为「当前这条被高亮选中了」，实际上只是位置变换，
+ * 和点击选中的状态无关，容易造成误解。设置页统一改成扁平列表：条目尺寸、
+ * 透明度恒定，只有内容随表冠/手指滚动。函数保留成空实现，调用处不必改写。
+ *
+ * 相册的文件夹列表仍然使用 [scalingItem]（那是浏览内容的视觉层次，不是"选中"暗示）。
+ */
+private fun Modifier.settingItem(key: String, scale: Boolean = true): Modifier = this
 
 /** 灵敏度显示：小于 1x 保留两位（0.15x），1x 以上保留一位（2.5x / 10.0x） */
 private fun formatSpeed(speed: Float): String =

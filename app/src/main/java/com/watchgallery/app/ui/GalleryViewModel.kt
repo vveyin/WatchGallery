@@ -174,6 +174,21 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         prefs.edit().putBoolean("show_names", show).apply()
     }
 
+    /** 查看大图时是否显示顶部的放大/缩小按键，默认显示；设置页可关（关掉后仍可双指/表冠缩放） */
+    private val _showZoomButtons = MutableStateFlow(prefs.getBoolean("show_zoom_buttons", true))
+    val showZoomButtons: StateFlow<Boolean> = _showZoomButtons
+
+    fun setShowZoomButtons(show: Boolean) {
+        _showZoomButtons.value = show
+        prefs.edit().putBoolean("show_zoom_buttons", show).apply()
+    }
+
+    /**
+     * 最近一次点击的缩略图在屏幕上的矩形（px，相对窗口根布局）。
+     * 只用于大图页的入场动画：从缩略图位置放大到全屏。不做状态观察，读一次即可。
+     */
+    var viewerOrigin: androidx.compose.ui.geometry.Rect? = null
+
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 

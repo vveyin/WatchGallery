@@ -53,6 +53,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -102,6 +103,8 @@ fun PhotoViewerScreen(
     initialIndex: Int,
     isRound: Boolean,
     crownEvents: Flow<Float> = emptyFlow(),
+    showZoomButtons: Boolean = true,
+    origin: Rect? = null,
     onBack: () -> Unit,
     onEdit: (Photo) -> Unit
 ) {
@@ -115,6 +118,14 @@ fun PhotoViewerScreen(
     // 翻页位移：0 表示正好停在第 index 张，负值表示画面向上偏移（正在翻向下一张）
     var pageOffset by remember { mutableFloatStateOf(0f) }
     var dragging by remember { mutableStateOf(false) }
+
+    // 入场动画：从点击的那张缩略图位置放大到全屏。
+    // 相册点开大图原本是「瞬间替换画面」，没有一点过渡；这里用 280ms 缓动把它补上，
+    // 有缩略图矩形就从那张的位置长大，取不到（比如表冠触发）就退化成淡入 + 轻微放大。
+    val enter = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        enter.animateTo(1f, tween(280, easing = FastOutSlowInEasing))
+    }
     var animJob by remember { mutableStateOf<Job?>(null) }
 
     val density = LocalDensity.current
@@ -225,29 +236,52 @@ fun PhotoViewerScreen(
             // 当前这张排在最前：入队顺序靠前，加载优先级更高，进页面时先出图
             val slots = if (range >= 2) intArrayOf(0, -1, 1, -2, 2) else intArrayOf(0, -1, 1)
 
-            for (d in slots) {
-                val p = photos[wrapIndex(index + d, n)]
-                val k = if (keyByUri) p.uri.toString() else "slot$d"
-                key(k) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .graphicsLayer { translationY = d * pageH + pageOffset }
-                    ) {
-                        Image(
-                            painter = rememberAsyncImagePainter(p.uri),
-                            contentDescription = p.displayName,
-                            contentScale = ContentScale.Fit,
+            val rootW = constraints.maxWidth.toFloat()
+            val rootH = constraints.maxHeight.toFloat()
+            val originRect = origin
+            val startScale = if (originRect != null && rootW > 0f) {
+                (originRect.width / rootW).coerceIn(0.12f, 1f)
+            } else 0.92f
+            val startTx = if (originRect != null) originRect.center.x - rootW / 2f else 0f
+            val startTy = if (originRect != null) originRect.center.y - rootH / 2f else 0f
+
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        val e = enter.value
+                        val s = startScale + (1f - startScale) * e
+                        scaleX = s
+                        scaleY = s
+                        translationX = startTx * (1f - e)
+                        translationY = startTy * (1f - e)
+                        alpha = 0.30f + 0.70f * e
+                    }
+            ) {
+                for (d in slots) {
+                    val p = photos[wrapIndex(index + d, n)]
+                    val k = if (keyByUri) p.uri.toString() else "slot$d"
+                    key(k) {
+                        Box(
                             modifier = Modifier
                                 .fillMaxSize()
-                                .graphicsLayer {
-                                    // 只有当前这张参与缩放/平移；其余两张保持原始大小，仅做位移
-                                    scaleX = if (d == 0) scale else 1f
-                                    scaleY = if (d == 0) scale else 1f
-                                    translationX = if (d == 0) offset.x else 0f
-                                    translationY = if (d == 0) offset.y else 0f
-                                }
-                        )
+                                .graphicsLayer { translationY = d * pageH + pageOffset }
+                        ) {
+                            Image(
+                                painter = rememberAsyncImagePainter(p.uri),
+                                contentDescription = p.displayName,
+                                contentScale = ContentScale.Fit,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        // 只有当前这张参与缩放/平移；其余保持原始大小，只做位移
+                                        scaleX = if (d == 0) scale else 1f
+                                        scaleY = if (d == 0) scale else 1f
+                                        translationX = if (d == 0) offset.x else 0f
+                                        translationY = if (d == 0) offset.y else 0f
+                                    }
+                            )
+                        }
                     }
                 }
             }
@@ -319,7 +353,8 @@ fun PhotoViewerScreen(
                 )
             }
 
-            // 顶部缩放按钮
+            // 顶部缩放按钮：设置里关掉「缩放按键」后整排不渲染（双指 / 表冠缩放不受影响）
+            if (showZoomButtons) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
@@ -347,6 +382,7 @@ fun PhotoViewerScreen(
                         Icon(Icons.Filled.ZoomOut, "缩小", tint = Color.White, modifier = Modifier.size(18.dp))
                     }
                 }
+            }
             }
 
             // 图片信息浮层（放在抽屉上方）
