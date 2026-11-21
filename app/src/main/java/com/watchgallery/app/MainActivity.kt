@@ -36,7 +36,9 @@ import com.watchgallery.app.data.Photo
 import com.watchgallery.app.theme.WatchGalleryTheme
 import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.CrashLogger
+import com.watchgallery.app.util.UpdateChecker
 import com.watchgallery.app.ui.*
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
@@ -280,6 +282,33 @@ private fun AppNavigation(
     val current = backStack.last()
     val below = if (backStack.size >= 2) backStack[backStack.size - 2] else null
 
+    // ── 冷启动自动检查更新 ──
+    // 只在整个进程第一次打开 App 时做一次：
+    //  - 从后台回到前台不会重建 Activity，天然不触发；
+    //  - Activity 因配置变化重建时，进程级标记已经置位，也不会重复检查。
+    LaunchedEffect(Unit) {
+        if (LaunchUpdateCheck.ran) return@LaunchedEffect
+        LaunchUpdateCheck.ran = true
+        // ① 先判断有没有网：没网就完全静默，什么都不提示
+        if (!UpdateChecker.isOnline(context)) return@LaunchedEffect
+        delay(900)   // 让相册先出图，别和扫盘抢 IO
+        if (!UpdateChecker.isOnline(context)) return@LaunchedEffect
+        // ② 有网再查新版本
+        val info = UpdateChecker.check(
+            BuildConfig.GITEE_OWNER, BuildConfig.GITEE_REPO,
+            BuildConfig.GITHUB_OWNER, BuildConfig.GITHUB_REPO
+        ).getOrNull() ?: return@LaunchedEffect
+        // ③ 确实有新版本才提示：直接进更新页，页面立刻显示「发现新版本 + 下载更新」
+        if (UpdateChecker.isNewer(
+                UpdateChecker.versionNumber(info.versionName),
+                UpdateChecker.versionNumber(BuildConfig.VERSION_NAME)
+            ) && backStack.size == 1
+        ) {
+            viewModel.setPendingUpdate(info)
+            navigate(Screen.Update)
+        }
+    }
+
     // 渲染某一层界面。
     // - 每层垫不透明纯黑背景：右划露出下层时不被透视叠加，缩放条目淡出也不透出下层画面。
     // - 底层（interactive=false）传空表冠流：避免上下两层同时滚。
@@ -373,3 +402,6 @@ private sealed class Screen {
     data object Editor : Screen()
     data object Update : Screen()
 }
+
+/** 进程级标记：本次进程是否已做过冷启动更新检测（进程重启才重置） */
+private object LaunchUpdateCheck { var ran = false }
