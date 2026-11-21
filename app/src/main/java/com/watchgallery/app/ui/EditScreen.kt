@@ -92,10 +92,11 @@ private enum class EditTool { NONE, FILTER, ADJUST, CROP, DRAW, ROTATE }
 private val AdjustLabels = listOf("亮度", "对比度", "饱和度", "色温")
 
 /**
- * 抽屉档位（dp）：0 = 收起；88 = 露出把手 + 工具行；148 = 再加一行选项；
- * 204 = 全开（调节时连滑杆一起）。手指拖到哪就在松手后吸附到最近的一档。
+ * 抽屉档位（dp）：0 = 完全收起（只剩屏幕底部那条白线）；
+ * 92 = 把手 + 工具行；152 = 再加一行选项；200 = 全开（调节时连滑杆一起）。
+ * 手指拖到哪就在松手后吸附到最近的一档。
  */
-private val PanelSnapDp = floatArrayOf(0f, 88f, 148f, 204f)
+private val PanelSnapDp = floatArrayOf(0f, 92f, 152f, 200f)
 
 /**
  * 图片编辑页。
@@ -155,16 +156,20 @@ fun EditScreen(
     // ── 抽屉：可见高度 panelHeight，0~maxPanel ──
     val snaps = remember(density) { PanelSnapDp.map { with(density) { it.dp.toPx() } } }
     val maxPanel = snaps.last()
-    val panel = remember { Animatable(0f) }
+    // 初始停在「工具栏」那一档：进编辑页就能看见工具，同时底部还有把手可拉
+    val panel = remember(snaps) { Animatable(snaps[1]) }
 
-    fun settleTo(target: Float, refresh: Boolean = true) {
-        scope.launch {
-            panel.animateTo(target, tween(240, easing = FastOutSlowInEasing))
-            if (refresh && blurEnabled && window != null) {
-                // 落位 100ms 后再刷新背景：与 f-x 一致，静态背景在单指操作下不会穿帮
-                BlurBackdrop.refreshSoon(window, 100)
-            }
-        }
+    fun settleTo(target: Float) {
+        scope.launch { panel.animateTo(target, tween(240, easing = FastOutSlowInEasing)) }
+    }
+
+    // 背景用**图片自己**糊一张，而不是抓屏：
+    // 编辑页的抽屉常驻可见（初始就露着工具栏），抓屏必然把按钮糊进背景。
+    // 图片自身没有这个问题，而且抽屉盖在图片上时颜色天然对得上。
+    var bgImage by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
+    LaunchedEffect(sourceBitmap) {
+        val b = sourceBitmap ?: return@LaunchedEffect
+        bgImage = BlurBackdrop.blurBitmapAsync(b)
     }
 
     /** 松手 / 点击时吸附到最近档 */
@@ -338,7 +343,60 @@ fun EditScreen(
             }
         }
 
-        // ── 抽屉：固定 maxPanel 高，靠 translationY 控制露出多少 ──
+        // ── 抽屉完全收起后，屏幕底部仍留一条白线 + 上滑热区，否则没有抓手上再拉开 ──
+        // 用 derivedStateOf 把「每帧都变的位移」压成布尔：只在跨越阈值时重组
+        val showPullHandle by remember { derivedStateOf { panel.value < 1f } }
+        if (showPullHandle) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .height(46.dp)
+                    .pointerInput(Unit) {
+                        awaitEachGesture {
+                            awaitFirstDown(requireUnconsumed = false)
+                            var total = 0f
+                            var decided = false
+                            while (true) {
+                                val e = awaitPointerEvent(PointerEventPass.Initial)
+                                if (e.changes.all { !it.pressed }) break
+                                val c = e.changes.first()
+                                total += c.position.y - c.previousPosition.y
+                                if (!decided && total < -6f) decided = true
+                                if (decided) {
+                                    c.consume()
+                                    scope.launch { panel.snapTo((-total).coerceIn(0f, maxPanel)) }
+                                }
+                            }
+                            if (decided) settleTo(nearestSnap(panel.value))
+                        }
+                    },
+                contentAlignment = Alignment.BottomCenter
+            ) {
+                Box(
+                    Modifier
+                        .padding(bottom = 10.dp)
+                        .width(44.dp)
+                        .height(3.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.55f))
+                )
+            }
+        }
+
+        // ── 毛玻璃条：固定贴底，只露出抽屉盖住的那一块（不跟面板一起升降）──
+        if (blurEnabled) {
+            BlurBand(
+                heightPx = { panel.value },
+                image = bgImage,
+                dim = 0.18f,
+                cornerRadiusPx = with(density) { 22.dp.toPx() },
+                // 模糊图还没做好时先垫一块半透明黑，避免抽屉一下子透出原图又跳变
+                fallback = Color.Black.copy(alpha = 0.42f)
+            )
+        }
+
+        // ── 抽屉：固定 maxPanel 高，靠 translationY 控制露出多少；面板自身透明 ──
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -358,9 +416,6 @@ fun EditScreen(
             shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)
         ) {
             Box(Modifier.fillMaxSize()) {
-                if (blurEnabled) {
-                    BlurPlate(Modifier.fillMaxSize(), dim = 0.18f, anchorBottom = true)
-                }
                 Column(
                     Modifier
                         .fillMaxSize()
@@ -404,7 +459,7 @@ fun EditScreen(
                                 .width(40.dp)
                                 .height(3.dp)
                                 .clip(CircleShape)
-                                .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f))
+                                .background(Color.White.copy(alpha = 0.55f))
                         )
                     }
 

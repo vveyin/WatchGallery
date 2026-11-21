@@ -26,6 +26,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
@@ -67,11 +68,16 @@ fun SettingsDrawer(
 
     val view = LocalView.current
     val window = remember(view) { view.context.findHostActivity()?.window }
+    val screenH = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
 
-    // 回到相册、抽屉还没图时先做一张，避免第一次上滑时背板是空的。
-    // 延后一点：首帧可能还没画完，太早抓会得到一张空图。
+    // 回到相册（抽屉确定在屏幕外）时把「禁止抓图」的门打开，并补一张干净底图。
+    // 只有在 enabled 为真时动门：其它页面（大图/编辑）可能正把门关着，不能被这里误开。
     LaunchedEffect(enabled, blurEnabled) {
-        if (enabled && blurEnabled && window != null && BlurBackdrop.image == null) {
+        if (!enabled) return@LaunchedEffect
+        BlurBackdrop.setCovered(false)
+        if (blurEnabled && window != null) {
+            // 每次回到相册都重新拍一张：上一张可能是大图/编辑页留下的
+            // 延后一点，等相册首帧画完，太早抓会得到一张空图
             kotlinx.coroutines.delay(600)
             BlurBackdrop.capture(window)
         }
@@ -79,13 +85,18 @@ fun SettingsDrawer(
 
     fun settleOpen() {
         onOpened()
+        // 抽屉已经在画面上，从这一刻起任何抓图都不干净
+        BlurBackdrop.setCovered(true)
         scope.launch { drawerOffset.animateTo(0f, tween(280, easing = FastOutSlowInEasing)) }
     }
     fun settleClose() {
         onClosed()
-        // 收起后底层已经重新露出来，补一张干净的背景给下次用（等抽屉完全移出屏幕）
-        if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 340)
-        scope.launch { drawerOffset.animateTo(collapsedY, tween(280, easing = FastOutSlowInEasing)) }
+        scope.launch {
+            drawerOffset.animateTo(collapsedY, tween(280, easing = FastOutSlowInEasing))
+            // 面板完全滑出屏幕后才开门补一张：此时画面里只有相册
+            BlurBackdrop.setCovered(false)
+            if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 80)
+        }
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -100,8 +111,10 @@ fun SettingsDrawer(
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             // 按下就先拍一帧：此刻抽屉还在屏幕外，拍到的是干净相册。
-                            // PixelCopy 是异步的，但会在下一帧合成前完成，抽屉那时还没动。
-                            if (blurEnabled && window != null) BlurBackdrop.capture(window)
+                            if (blurEnabled && window != null) {
+                                BlurBackdrop.setCovered(false)
+                                BlurBackdrop.capture(window)
+                            }
                             var totalDy = 0f
                             var decided = false
                             var abandoned = false
@@ -112,7 +125,11 @@ fun SettingsDrawer(
                                 val dy = change.position.y - change.previousPosition.y
                                 totalDy += dy
                                 if (!decided && !abandoned && abs(totalDy) > slopPx) {
-                                    if (totalDy < 0f) decided = true else abandoned = true
+                                    if (totalDy < 0f) {
+                                        decided = true
+                                        // 抽屉开始入画，停止刷新
+                                        BlurBackdrop.setCovered(true)
+                                    } else abandoned = true
                                 }
                                 if (decided) {
                                     change.consume()
@@ -131,16 +148,23 @@ fun SettingsDrawer(
             }
         }
 
-        // ── 抽屉面板：整屏，靠 translationY 升降 ──
+        // ── 毛玻璃背板：固定铺满整屏，只露出「抽屉盖住的那一块」──
+        // 露出高度 = collapsedY - drawerOffset（收起时 0、展开时整屏），
+        // 图本身按整屏坐标绘制，所以拖动时背景像素纹丝不动，只是揭开范围在变。
+        if (blurEnabled) {
+            BlurBand(
+                heightPx = { (collapsedY - drawerOffset.value).coerceIn(0f, screenH) },
+                dim = 0.55f
+            )
+        }
+
+        // ── 抽屉面板：整屏，靠 translationY 升降，自身透明（玻璃板）──
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .graphicsLayer { translationY = drawerOffset.value }
         ) {
-            // ── 毛玻璃背板 ──
-            if (blurEnabled) {
-                BlurPlate(Modifier.fillMaxSize(), dim = 0.55f)
-            } else {
+            if (!blurEnabled) {
                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
             }
 

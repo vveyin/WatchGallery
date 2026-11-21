@@ -39,6 +39,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -151,19 +152,32 @@ fun PhotoViewerScreen(
 
     fun openDrawer() {
         drawerOpen = true
-        scope.launch {
-            drawerOffset.animateTo(0f, tween(240, easing = FastOutSlowInEasing))
-            // 落位后 100ms 重抓一张：与 f-x 一致。单指操作、抽屉静止时静态背景不会穿帮。
-            if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 100)
-        }
+        // 抽屉一入画就不许再抓图：否则几帧之后「编辑」按钮就被糊进背景里了
+        BlurBackdrop.setCovered(true)
+        scope.launch { drawerOffset.animateTo(0f, tween(240, easing = FastOutSlowInEasing)) }
     }
 
     fun closeDrawer() {
         drawerOpen = false
         scope.launch {
             drawerOffset.animateTo(drawerPx, tween(200, easing = FastOutSlowInEasing))
-            if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 100)
+            // 面板完全滑出去之后再开门补一张干净的大图
+            BlurBackdrop.setCovered(false)
+            if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 80)
         }
+    }
+
+    // 进页面时抽屉是收起的：等大图解码并画出来，拍一张干净的底图。
+    // 期间用户要是先拉起抽屉，capture 会被 covered 门挡掉，不会拍到面板。
+    LaunchedEffect(Unit) {
+        if (blurEnabled && window != null) {
+            BlurBackdrop.setCovered(false)
+            delay(700)
+            BlurBackdrop.capture(window)
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { BlurBackdrop.setCovered(false) }
     }
 
     fun resetZoom() {
@@ -229,6 +243,10 @@ fun PhotoViewerScreen(
                 pageOffset += delta * pageH
                 scale = 1f
                 offset = Offset.Zero
+                // 换了张图，抽屉背景也得跟着换 —— 只在抽屉收起时拍，才不含面板
+                if (!drawerOpen && blurEnabled && window != null) {
+                    BlurBackdrop.refreshSoon(window, 360)
+                }
             }
             animJob?.cancel()
             animJob = scope.launch {
@@ -508,7 +526,17 @@ fun PhotoViewerScreen(
                 )
             }
 
-            // ── 抽屉面板：只有按钮高度，靠 translationY 升降 ──
+            // ── 毛玻璃条：固定在屏幕底部，只露出抽屉盖住的那一条 ──
+            // 背景图按整屏坐标绘制，抽屉滑动时像素不动，只是可见范围在变。
+            if (blurEnabled) {
+                BlurBand(
+                    heightPx = { (drawerPx - drawerOffset.value).coerceIn(0f, drawerPx) },
+                    dim = 0.20f,
+                    cornerRadiusPx = with(density) { 18.dp.toPx() }
+                )
+            }
+
+            // ── 抽屉面板：只有按钮高度，靠 translationY 升降，自身透明（玻璃板）──
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -544,10 +572,6 @@ fun PhotoViewerScreen(
                 shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
             ) {
                 Box(Modifier.fillMaxSize()) {
-                    // 毛玻璃背板：按整屏尺寸画、底边对齐，只露出最下面这一条
-                    if (blurEnabled) {
-                        BlurPlate(Modifier.fillMaxSize(), dim = 0.20f, anchorBottom = true)
-                    }
                     Column(
                         modifier = Modifier.fillMaxSize(),
                         horizontalAlignment = Alignment.CenterHorizontally

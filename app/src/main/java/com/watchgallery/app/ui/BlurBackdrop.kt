@@ -15,8 +15,6 @@ import android.renderscript.ScriptIntrinsicBlur
 import android.view.PixelCopy
 import android.view.Window
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
@@ -25,11 +23,20 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import kotlin.coroutines.resume
 import java.util.concurrent.Executors
 
 /**
@@ -80,6 +87,18 @@ object BlurBackdrop {
     /** 正在处理时又来请求：只记一个标记，做完补一帧。 */
     private var pending = false
 
+    /**
+     * 抽屉正盖在屏幕上。为真时 [capture] 一律拒绝。
+     *
+     * 这是「背景里不能出现抽屉自己」的硬保证：只要抽屉可见（哪怕只露出一条把手），
+     * 拍下来的画面就带着它的按钮，糊完就是一块残影。所以刷新只允许发生在
+     * 抽屉完全收起的时候，由各界面的手势/动画在合适的时刻开关这道门。
+     */
+    private var covered = false
+
+    /** 排着队的延时刷新；关门时要能取消，否则照样会拍到抽屉。 */
+    private var pendingRefresh: Runnable? = null
+
     private var rs: RenderScript? = null
 
     /** 最近一次抓图用的窗口：补帧时不用调用方再传。 */
@@ -92,6 +111,8 @@ object BlurBackdrop {
      * 抽屉一旦入画就会被一起糊进背景（残影）。
      */
     fun capture(window: Window) {
+        // 抽屉在画面上（或正在滑进来/滑出去）→ 这一帧一定不干净，直接丢掉
+        if (covered) return
         if (refreshing) {
             pending = true
             return
@@ -140,9 +161,30 @@ object BlurBackdrop {
         }
     }
 
-    /** 松手后延迟刷新：给抽屉吸附动画留出落位时间，100ms 后再拍。 */
+    /**
+     * 开关「抽屉可见」这道门。关（true）时同时撤销排队的刷新。
+     *
+     * 打开抽屉、拖动中、抽屉停在任意一档 —— 都要关门；
+     * 抽屉滑出屏幕之后才开（false），这时拍到的才是干净底层。
+     */
+    fun setCovered(value: Boolean) {
+        covered = value
+        if (value) {
+            pendingRefresh?.let { main.removeCallbacks(it) }
+            pendingRefresh = null
+        }
+    }
+
+    /** 延时刷新。同一时刻只保留最后一个请求，避免连拖时排一长串抓图。 */
     fun refreshSoon(window: Window, delayMs: Long = 100L) {
-        main.postDelayed({ capture(window) }, delayMs)
+        pendingRefresh?.let { main.removeCallbacks(it) }
+        val ref = java.lang.ref.WeakReference(window)
+        val task = Runnable {
+            pendingRefresh = null
+            ref.get()?.let { capture(it) }
+        }
+        pendingRefresh = task
+        main.postDelayed(task, delayMs)
     }
 
     private fun blurAndPublish(source: Bitmap) {
@@ -259,69 +301,91 @@ object BlurBackdrop {
         }
     }
 
+/** 把一张图缩到 1/4 再糊掉，给「用图片自身当背景」的场景（编辑页）用。 */
+suspend fun blurBitmapAsync(src: android.graphics.Bitmap): ImageBitmap? =
+    kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+        worker.execute {
+            val out = runCatching {
+                val w = (src.width / 4).coerceAtLeast(16)
+                val h = (src.height / 4).coerceAtLeast(16)
+                val small = Bitmap.createScaledBitmap(src, w, h, true)
+                val blurred = runCatching { renderScriptBlur(small) }
+                    .getOrElse { runCatching { stackBlur(small, 8) }.getOrElse { small } }
+                blurred.asImageBitmap()
+            }.getOrNull()
+            cont.resume(out)
+        }
+    }
+
     /** 由 App 启动时注入 applicationContext（避免每张图都问一遍）。 */
     var appContext: Context? = null
         internal set
 }
 
 /**
- * 抽屉背板：把 [BlurBackdrop] 那张静态模糊图铺在容器里，再叠一层主题底色。
- * 图还没做出来时退回纯色，不会露出刺眼的白。
+ * 抽屉背板 —— **固定铺在屏幕底层的静态模糊图**，不跟抽屉一起移动。
  *
- * @param anchorBottom 容器只是屏幕底部的一条（大图/编辑抽屉）时为 true：
- *        按整屏尺寸绘制、底边对齐，这样看到的是「整屏背景图的下半截」，
- *        而不是把一张整图压扁进 54dp 的条里。
+ * 和 f-x 一样的分层：底层永远是那张糊好的整屏图，抽屉面板（透明玻璃）从下往上滑，
+ * 滑到哪儿就把哪一块背景「揭开」。所以拖动时背景里的色块是钉死的，只有覆盖范围在变，
+ * 观感是「玻璃板在图片上移动」，而不是「一张背景图跟着面板一起升起来」。
+ *
+ * 实现上不做布局高度抖动：整屏画一次，用 [clipPath] 只保留底部 [heightPx] 那一段，
+ * 图本身按整屏尺寸、底边对齐，因此可见区域的像素坐标恒定不动。
+ *
+ * @param heightPx 抽屉当前露出的高度（px），0 表示完全不显示。
+ *        用 lambda 而不是 Float：抽屉位移每帧都在变，如果在组合阶段读它，
+ *        整棵子树（设置列表 / 工具行）都会跟着每帧重组；放进绘制阶段读，
+ *        就只会让这块 Canvas 重绘。
+ * @param image 用哪张糊好的图；默认全局那张（设置抽屉抓的相册）
+ * @param cornerRadiusPx 顶部圆角，与抽屉面板保持一致，否则圆角外会漏出底图
  */
 @Composable
-fun BlurPlate(
+fun BlurBand(
+    heightPx: () -> Float,
     modifier: Modifier = Modifier,
-    dim: Float = 0.42f,
-    anchorBottom: Boolean = false
+    image: ImageBitmap? = BlurBackdrop.image,
+    dim: Float = 0.35f,
+    cornerRadiusPx: Float = 0f,
+    fallback: androidx.compose.ui.graphics.Color? = null
 ) {
-    val img = BlurBackdrop.image
     val density = LocalDensity.current
     val screenW = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
     val screenH = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val scrim = MaterialTheme.colorScheme.background.copy(alpha = dim)
+    val fallbackColor = fallback ?: MaterialTheme.colorScheme.background
 
-    Box(modifier) {
-        if (img != null) {
-            Canvas(Modifier.fillMaxSize()) {
-                if (anchorBottom && size.height < screenH - 1f) {
-                    drawImage(
-                        image = img,
-                        srcOffset = androidx.compose.ui.unit.IntOffset.Zero,
-                        srcSize = androidx.compose.ui.unit.IntSize(img.width, img.height),
-                        dstOffset = androidx.compose.ui.unit.IntOffset(
-                            0,
-                            (size.height - screenH).toInt()
-                        ),
-                        dstSize = androidx.compose.ui.unit.IntSize(
-                            screenW.toInt().coerceAtLeast(1),
-                            screenH.toInt().coerceAtLeast(1)
-                        )
-                    )
-                } else {
-                    drawImage(
-                        image = img,
-                        srcOffset = androidx.compose.ui.unit.IntOffset.Zero,
-                        srcSize = androidx.compose.ui.unit.IntSize(img.width, img.height),
-                        dstOffset = androidx.compose.ui.unit.IntOffset.Zero,
-                        dstSize = androidx.compose.ui.unit.IntSize(
-                            size.width.toInt().coerceAtLeast(1),
-                            size.height.toInt().coerceAtLeast(1)
-                        )
-                    )
-                }
-            }
-        } else {
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
+    Canvas(modifier.fillMaxSize()) {
+        val h = heightPx().coerceAtLeast(0f)
+        if (h < 1f) return@Canvas
+        val top = size.height - h
+        val clip = Path().apply {
+            addRoundRect(
+                RoundRect(
+                    left = 0f,
+                    top = top,
+                    right = size.width,
+                    bottom = size.height,
+                    topLeftCornerRadius = CornerRadius(cornerRadiusPx),
+                    topRightCornerRadius = CornerRadius(cornerRadiusPx)
+                )
+            )
         }
-        // 压暗：让上面的白色文字/图标有对比度；日夜主题都用自己的底色，观感统一
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background.copy(alpha = dim))
-        )
+        clipPath(clip) {
+            if (image != null && screenW > 1f && screenH > 1f) {
+                // 整屏尺寸绘制、底边对齐：露出的是「整屏背景图的底下一截」
+                drawImage(
+                    image = image,
+                    srcOffset = IntOffset.Zero,
+                    srcSize = IntSize(image.width, image.height),
+                    dstOffset = IntOffset(0, (size.height - screenH).toInt()),
+                    dstSize = IntSize(screenW.toInt().coerceAtLeast(1), screenH.toInt().coerceAtLeast(1))
+                )
+            } else {
+                drawRect(fallbackColor, topLeft = Offset(0f, top), size = Size(size.width, h))
+            }
+            // 压暗：让面板上的文字/图标有对比度
+            drawRect(scrim, topLeft = Offset(0f, top), size = Size(size.width, h))
+        }
     }
 }
 
