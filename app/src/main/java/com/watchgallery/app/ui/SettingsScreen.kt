@@ -6,9 +6,12 @@ import android.content.Context
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Label
+import androidx.compose.material.icons.automirrored.filled.LabelOff
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -107,6 +110,7 @@ private fun SettingsMain(
     val crownMode by viewModel.crownMode.collectAsState()
     val crownSpeed by viewModel.crownSpeed.collectAsState()
     val gridColumns by viewModel.gridColumns.collectAsState()
+    val showPhotoNames by viewModel.showPhotoNames.collectAsState()
     val report by viewModel.scanReport.collectAsState()
     val context = LocalContext.current
 
@@ -138,6 +142,15 @@ private fun SettingsMain(
                 subtitle = "$gridColumns 张 · 点击切换 2/3 张",
                 onClick = { viewModel.setGridColumns(if (gridColumns == 2) 3 else 2) },
                 itemKey = "row_grid"
+            )
+        }
+        item(key = "row_names") {
+            SettingButton(
+                icon = if (showPhotoNames) Icons.AutoMirrored.Filled.Label else Icons.AutoMirrored.Filled.LabelOff,
+                title = "显示图片名",
+                subtitle = if (showPhotoNames) "开 · 照片底部显示文件名" else "关 · 只看照片",
+                onClick = { viewModel.setShowPhotoNames(!showPhotoNames) },
+                itemKey = "row_names"
             )
         }
         item(key = "row_theme") {
@@ -254,19 +267,12 @@ private fun CrownSettings(
             item(key = "crown_mode_${m.name}") {
                 val mk = "crown_mode_${m.name}"
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    val btnMod = Modifier.fillMaxWidth().height(42.dp).scalingItem(mk)
-                    val selected = mode == m
-                    if (selected) {
-                        Button(onClick = { mode = m; commit() }, modifier = btnMod) {
-                            Text("${m.label} — ${m.description}",
-                                style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                        }
-                    } else {
-                        OutlinedButton(onClick = { mode = m; commit() }, modifier = btnMod) {
-                            Text("${m.label} — ${m.description}",
-                                style = MaterialTheme.typography.labelMedium, maxLines = 1)
-                        }
-                    }
+                    OptionButton(
+                        selected = mode == m,
+                        label = "${m.label} — ${m.description}",
+                        onClick = { mode = m; commit() },
+                        modifier = Modifier.fillMaxWidth().height(42.dp).scalingItem(mk)
+                    )
                 }
             }
         }
@@ -341,17 +347,12 @@ private fun ThemeSettings(
             item(key = "theme_${mode.name}") {
                 val mk = "theme_${mode.name}"
                 Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    val btnMod = Modifier.fillMaxWidth().height(42.dp).scalingItem(mk)
-                    val selected = current == mode
-                    if (selected) {
-                        Button(onClick = { viewModel.setThemeMode(mode) }, modifier = btnMod) {
-                            Text(label, style = MaterialTheme.typography.labelLarge)
-                        }
-                    } else {
-                        OutlinedButton(onClick = { viewModel.setThemeMode(mode) }, modifier = btnMod) {
-                            Text(label, style = MaterialTheme.typography.labelLarge)
-                        }
-                    }
+                    OptionButton(
+                        selected = current == mode,
+                        label = label,
+                        onClick = { viewModel.setThemeMode(mode) },
+                        modifier = Modifier.fillMaxWidth().height(42.dp).scalingItem(mk)
+                    )
                 }
             }
         }
@@ -361,6 +362,8 @@ private fun ThemeSettings(
 /**
  * Material3 标准全圆角按钮（Wear OS pill 风格）：满宽。
  * 由 [scalingItem] 做「只缩不放」形变 —— 居中正常大小（≈满屏宽），边缘缩小淡出。
+ * 底色用 surfaceVariant（淡灰），不再用 primary 紫蓝填充：设置条属于导航项，
+ * 满屏紫色会抢走注意力，也很难和选中态区分。
  */
 @Composable
 private fun SettingButton(
@@ -377,6 +380,10 @@ private fun SettingButton(
                 .fillMaxWidth()
                 .height(46.dp)
                 .scalingItem(itemKey),
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = MaterialTheme.colorScheme.onSurface
+            ),
             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 0.dp)
         ) {
             Icon(icon, contentDescription = null, modifier = Modifier.size(17.dp))
@@ -384,10 +391,48 @@ private fun SettingButton(
             Column(Modifier.weight(1f)) {
                 Text(title, style = MaterialTheme.typography.labelLarge, maxLines = 1)
                 Text(subtitle, style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.75f), maxLines = 1)
+                    color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
             }
             Icon(Icons.Filled.ChevronRight, contentDescription = null,
                 modifier = Modifier.size(15.dp))
+        }
+    }
+}
+
+/**
+ * 选项按钮（单选）：未选中 = 描边；选中 = 淡灰底 + primary 描边与文字。
+ * 不用 primary 满填，避免整页紫蓝色块。
+ */
+@Composable
+private fun OptionButton(
+    selected: Boolean,
+    label: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    if (selected) {
+        Button(
+            onClick = onClick,
+            modifier = modifier,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                contentColor = MaterialTheme.colorScheme.primary
+            ),
+            border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+        ) {
+            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+        }
+    } else {
+        OutlinedButton(
+            onClick = onClick,
+            modifier = modifier,
+            colors = ButtonDefaults.outlinedButtonColors(
+                contentColor = MaterialTheme.colorScheme.onSurfaceVariant
+            ),
+            contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+        ) {
+            Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
         }
     }
 }
