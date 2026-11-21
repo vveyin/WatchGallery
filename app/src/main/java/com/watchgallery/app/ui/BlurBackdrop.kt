@@ -33,9 +33,6 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.clipPath
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.dp
 import kotlin.coroutines.resume
 import java.util.concurrent.Executors
 
@@ -301,16 +298,37 @@ object BlurBackdrop {
         }
     }
 
-/** 把一张图缩到 1/4 再糊掉，给「用图片自身当背景」的场景（编辑页）用。 */
-suspend fun blurBitmapAsync(src: android.graphics.Bitmap): ImageBitmap? =
-    kotlinx.coroutines.suspendCancellableCoroutine { cont ->
+    /**
+     * 合成一张「与屏幕完全等价」的图再模糊：黑底 + 按图片**实际显示的矩形**把图放进去。
+     *
+     * 编辑页不能直接糊原图：原图会按自己的比例铺满，而上层图片是按「圆内最大矩形」
+     * 居中显示的，两者大小/位置对不上，抽屉背景里的画面就像另外一张图。
+     * 按屏幕坐标合成后，糊出来的背景与上面的图片严丝合缝，抽屉滑到哪儿都对得齐。
+     *
+     * @param dst 图片在屏幕上的矩形（px，整屏坐标系）
+     */
+    suspend fun blurScreenAsync(
+        src: Bitmap,
+        screenW: Int,
+        screenH: Int,
+        dst: android.graphics.RectF
+    ): ImageBitmap? = kotlinx.coroutines.suspendCancellableCoroutine { cont ->
         worker.execute {
             val out = runCatching {
-                val w = (src.width / 4).coerceAtLeast(16)
-                val h = (src.height / 4).coerceAtLeast(16)
-                val small = Bitmap.createScaledBitmap(src, w, h, true)
-                val blurred = runCatching { renderScriptBlur(small) }
-                    .getOrElse { runCatching { stackBlur(small, 8) }.getOrElse { small } }
+                val w = (screenW / DOWNSCALE).coerceAtLeast(16)
+                val h = (screenH / DOWNSCALE).coerceAtLeast(16)
+                val composed = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                val canvas = android.graphics.Canvas(composed)
+                canvas.drawColor(android.graphics.Color.BLACK)
+                val k = w.toFloat() / screenW.coerceAtLeast(1).toFloat()
+                canvas.drawBitmap(
+                    src,
+                    null,
+                    android.graphics.RectF(dst.left * k, dst.top * k, dst.right * k, dst.bottom * k),
+                    android.graphics.Paint(android.graphics.Paint.FILTER_BITMAP_FLAG)
+                )
+                val blurred = runCatching { renderScriptBlur(composed) }
+                    .getOrElse { runCatching { stackBlur(composed, 8) }.getOrElse { composed } }
                 blurred.asImageBitmap()
             }.getOrNull()
             cont.resume(out)
@@ -348,9 +366,6 @@ fun BlurBand(
     cornerRadiusPx: Float = 0f,
     fallback: androidx.compose.ui.graphics.Color? = null
 ) {
-    val density = LocalDensity.current
-    val screenW = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
-    val screenH = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val scrim = MaterialTheme.colorScheme.background.copy(alpha = dim)
     val fallbackColor = fallback ?: MaterialTheme.colorScheme.background
 
@@ -371,14 +386,15 @@ fun BlurBand(
             )
         }
         clipPath(clip) {
-            if (image != null && screenW > 1f && screenH > 1f) {
-                // 整屏尺寸绘制、底边对齐：露出的是「整屏背景图的底下一截」
+            if (image != null) {
+                // 这张 Canvas 永远铺满整屏，直接把整屏图铺上去：
+                // 像素坐标与屏幕一一对应，抽屉揭开到哪儿都严丝合缝。
                 drawImage(
                     image = image,
                     srcOffset = IntOffset.Zero,
                     srcSize = IntSize(image.width, image.height),
-                    dstOffset = IntOffset(0, (size.height - screenH).toInt()),
-                    dstSize = IntSize(screenW.toInt().coerceAtLeast(1), screenH.toInt().coerceAtLeast(1))
+                    dstOffset = IntOffset.Zero,
+                    dstSize = IntSize(size.width.toInt().coerceAtLeast(1), size.height.toInt().coerceAtLeast(1))
                 )
             } else {
                 drawRect(fallbackColor, topLeft = Offset(0f, top), size = Size(size.width, h))

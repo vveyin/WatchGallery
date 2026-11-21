@@ -12,6 +12,7 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -62,6 +63,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.IntSize
@@ -78,9 +80,6 @@ import kotlin.math.abs
 
 /** 缩放上限（表冠与双指共用） */
 private const val MAX_SCALE = 6f
-
-/** 抽屉面板高度：只容纳一个按钮 */
-private val DrawerHeight = 54.dp
 
 /** 抽屉收起时，屏幕底部用于「上滑拉起抽屉」的把手区高度 */
 private val HandleZone = 38.dp
@@ -139,28 +138,39 @@ fun PhotoViewerScreen(
     val density = LocalDensity.current
     val view = LocalView.current
     val window = remember(view) { view.context.findHostActivity()?.window }
-    val drawerPx = with(density) { DrawerHeight.toPx() }
+    val screenH = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val handlePx = with(density) { HandleZone.toPx() }
     val slopPx = with(density) { 6.dp.toPx() }
 
-    // 抽屉：drawerOffset 就是面板的 translationY。
-    //   drawerPx → 完全收起（藏在屏幕下沿之外）
-    //   0        → 完全展开（只占按钮高度，不遮住整屏）
-    val drawerOffset = remember { Animatable(drawerPx) }
+    // 抽屉两态：0 = 全屏铺开，screenH = 完全收起（藏在屏幕下沿之外）。
+    // 位移用普通 Float 而不是 Animatable：拖动跑在 awaitEachGesture 的受限作用域里，
+    // 调不了 snapTo，每帧 launch 一个协程会让旧值后到、面板来回抖。
+    var drawerY by remember { mutableFloatStateOf(screenH) }
+    var drawerJob by remember { mutableStateOf<Job?>(null) }
     var drawerOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+
+    fun settleDrawer(target: Float) {
+        drawerJob?.cancel()
+        drawerJob = scope.launch {
+            animate(drawerY, target, animationSpec = tween(240, easing = FastOutSlowInEasing)) { v, _ ->
+                drawerY = v
+            }
+        }
+    }
 
     fun openDrawer() {
         drawerOpen = true
         // 抽屉一入画就不许再抓图：否则几帧之后「编辑」按钮就被糊进背景里了
         BlurBackdrop.setCovered(true)
-        scope.launch { drawerOffset.animateTo(0f, tween(240, easing = FastOutSlowInEasing)) }
+        settleDrawer(0f)
     }
 
     fun closeDrawer() {
         drawerOpen = false
+        settleDrawer(screenH)
         scope.launch {
-            drawerOffset.animateTo(drawerPx, tween(200, easing = FastOutSlowInEasing))
+            delay(280)
             // 面板完全滑出去之后再开门补一张干净的大图
             BlurBackdrop.setCovered(false)
             if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 80)
@@ -449,7 +459,7 @@ fun PhotoViewerScreen(
                 Surface(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = DrawerHeight + 14.dp)
+                        .padding(bottom = 20.dp)
                         .widthIn(max = contentWidth),
                     color = Color.Black.copy(alpha = 0.72f),
                     shape = RoundedCornerShape(10.dp)
@@ -485,13 +495,12 @@ fun PhotoViewerScreen(
                                     if (!decided && total < -slopPx) decided = true
                                     if (decided) {
                                         change.consume()
-                                        val target = (drawerPx + total).coerceIn(0f, drawerPx)
-                                        scope.launch { drawerOffset.snapTo(target) }
+                                        drawerJob?.cancel()
+                                        drawerY = (screenH + total).coerceIn(0f, screenH)
                                     }
                                 }
-                                if (decided) {
-                                    if (drawerOffset.value < drawerPx * 0.55f) openDrawer() else closeDrawer()
-                                }
+                                // 把手区只有 38dp 行程，拖不到顶，上滑即视为「要打开」
+                                if (decided) openDrawer()
                             }
                         },
                     contentAlignment = Alignment.BottomCenter
@@ -507,63 +516,44 @@ fun PhotoViewerScreen(
                 }
             }
 
-            // ── 展开时点面板以外区域收起 ──
-            if (drawerOpen) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .pointerInput(Unit) {
-                            awaitEachGesture {
-                                awaitFirstDown(requireUnconsumed = false)
-                                var pressed = true
-                                while (pressed) {
-                                    val event = awaitPointerEvent()
-                                    pressed = event.changes.any { it.pressed }
-                                }
-                                closeDrawer()
-                            }
-                        }
-                )
-            }
-
             // ── 毛玻璃条：固定在屏幕底部，只露出抽屉盖住的那一条 ──
             // 背景图按整屏坐标绘制，抽屉滑动时像素不动，只是可见范围在变。
             if (blurEnabled) {
                 BlurBand(
-                    heightPx = { (drawerPx - drawerOffset.value).coerceIn(0f, drawerPx) },
+                    heightPx = { (screenH - drawerY).coerceIn(0f, screenH) },
                     dim = 0.20f,
                     cornerRadiusPx = with(density) { 18.dp.toPx() }
                 )
             }
 
-            // ── 抽屉面板：只有按钮高度，靠 translationY 升降，自身透明（玻璃板）──
+            // ── 抽屉面板：整屏高，靠 translationY 升降，自身透明（玻璃板）──
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .height(DrawerHeight)
-                    .graphicsLayer { translationY = drawerOffset.value }
+                    .height(with(density) { screenH.toDp() })
+                    .graphicsLayer { translationY = drawerY }
+                    // 整块面板都能上下拖；轻点不消费，留给里面的按钮
                     .pointerInput(Unit) {
+                        val slop = 8.dp.toPx()
                         awaitEachGesture {
-                            awaitFirstDown(requireUnconsumed = false)
-                            var total = 0f
-                            var decided = false
+                            val down = awaitFirstDown(requireUnconsumed = false)
+                            val start = drawerY
+                            var dragged = false
                             while (true) {
-                                val event = awaitPointerEvent(PointerEventPass.Initial)
-                                if (event.changes.all { !it.pressed }) break
-                                val change = event.changes.first()
-                                total += change.position.y - change.previousPosition.y
-                                if (!decided && abs(total) > slopPx) {
-                                    // 只接受下滑收起，上滑不处理（已到顶）
-                                    if (total > 0f) decided = true else break
+                                val e = awaitPointerEvent()
+                                val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                                val dy = c.position.y - down.position.y
+                                if (!dragged && abs(dy) > slop) dragged = true
+                                if (dragged) {
+                                    c.consume()
+                                    drawerJob?.cancel()
+                                    drawerY = (start - dy).coerceIn(0f, screenH)
                                 }
-                                if (decided) {
-                                    change.consume()
-                                    scope.launch { drawerOffset.snapTo(total.coerceIn(0f, drawerPx)) }
-                                }
+                                if (!c.pressed) break
                             }
-                            if (decided) {
-                                if (drawerOffset.value > drawerPx * 0.35f) closeDrawer() else openDrawer()
+                            if (dragged) {
+                                if (drawerY > screenH * 0.42f) closeDrawer() else openDrawer()
                             }
                         }
                     },
@@ -571,43 +561,52 @@ fun PhotoViewerScreen(
                 tonalElevation = 0.dp,
                 shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
             ) {
-                Box(Modifier.fillMaxSize()) {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally
-                    ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    // 把手：轻点收起（上下拖动交给整块面板）
                     Box(
                         Modifier
-                            .padding(top = 6.dp)
-                            .width(36.dp)
-                            .height(3.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f))
-                    )
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .fillMaxWidth(),
+                            .fillMaxWidth()
+                            .height(30.dp)
+                            .pointerInput(Unit) { detectTapGestures { closeDrawer() } },
                         contentAlignment = Alignment.Center
                     ) {
-                        Button(
-                            onClick = {
-                                closeDrawer()
-                                onEdit(photo)
-                            },
-                            modifier = Modifier
-                                .widthIn(min = 96.dp)
-                                .height(40.dp),
-                            contentPadding = PaddingValues(horizontal = 18.dp)
-                        ) {
-                            Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(Modifier.width(6.dp))
-                            Text("编辑", style = MaterialTheme.typography.labelLarge)
-                        }
+                        Box(
+                            Modifier
+                                .width(40.dp)
+                                .height(3.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.55f))
+                        )
                     }
+
+                    Spacer(Modifier.height(18.dp))
+
+                    // 功能列表：现在只有「编辑」，以后加功能直接往下排
+                    Button(
+                        onClick = {
+                            closeDrawer()
+                            onEdit(photo)
+                        },
+                        modifier = Modifier
+                            .widthIn(min = 104.dp)
+                            .height(42.dp),
+                        contentPadding = PaddingValues(horizontal = 18.dp)
+                    ) {
+                        Icon(Icons.Filled.Edit, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("编辑", style = MaterialTheme.typography.labelLarge)
                     }
+
+                    Spacer(Modifier.height(18.dp))
                 }
             }
+
         }
     }
 }

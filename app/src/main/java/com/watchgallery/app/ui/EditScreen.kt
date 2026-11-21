@@ -74,7 +74,7 @@ import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.watchgallery.app.data.Photo
@@ -93,20 +93,19 @@ private enum class EditTool { NONE, FILTER, ADJUST, CROP, DRAW, ROTATE }
 private val AdjustLabels = listOf("亮度", "对比度", "饱和度", "色温")
 
 /**
- * 抽屉档位（dp）：0 = 完全收起（只剩屏幕底部那条白线）；
- * 92 = 把手 + 工具行；152 = 再加一行选项；200 = 全开（调节时连滑杆一起）。
- * 手指拖到哪就在松手后吸附到最近的一档。
+ * 抽屉只有两态：**不显示**（屏幕上只留底部一条白线）和**全屏铺开**。
+ * 和设置抽屉一致，工具、选项、滑杆一次全摆出来，不用再一档一档往上拉。
  */
-private val PanelSnapDp = floatArrayOf(0f, 92f, 152f, 200f)
 
 /**
  * 图片编辑页。
  *
  * 布局：
  *  - 图片占满整个屏幕（圆屏取内切圆内最大的等比例矩形），**不因抽屉展开而移动/缩小**；
- *  - 底部抽屉是盖在图片上的一层毛玻璃，最多盖住下半部分；
- *  - 抽屉可停在 4 个档位（收起 / 工具栏 / 工具+选项 / 全开），拖动跟手、松手吸附最近档；
- *    轻点把手则逐档展开，到顶后再点收起 —— 单指也能操作。
+ *  - 抽屉是盖在图片上的一层毛玻璃，只有两态：不显示 / 全屏。收起时底部留一条白线，
+ *    从白线上滑即可全屏铺开；在面板上向下拖、或轻点面板顶部的把手即可收回；
+ *  - 背景是「屏幕等价图」的模糊版：黑底 + 图片按它在屏幕上的实际位置画进去再糊，
+ *    所以抽屉里的背景和上面的图片大小、位置完全对得上。
  */
 @Composable
 fun EditScreen(
@@ -151,39 +150,29 @@ fun EditScreen(
 
     val density = LocalDensity.current
     val scope = rememberCoroutineScope()
-    val view = LocalView.current
-    val window = remember(view) { view.context.findHostActivity()?.window }
 
-    // ── 抽屉：可见高度 panelHeight，0~maxPanel ──
-    val snaps = remember(density) { PanelSnapDp.map { with(density) { it.dp.toPx() } } }
-    val maxPanel = snaps.last()
-    // 抽屉露出高度。这里故意不用 Animatable：
-    // 拖动发生在 awaitEachGesture 的「受限挂起作用域」里，调不了 Animatable.snapTo，
-    // 只能往 scope 里 launch 一个协程 —— 每帧一个，旧值后到就把面板拉回去（抽搐）。
-    // 换成普通 Float 状态：拖动直接赋值（同步、零延迟），松手再用一个可取消的 Job 跑吸附动画。
-    var panel by remember(snaps) { mutableFloatStateOf(snaps[1]) }
+    // ── 抽屉：0 = 不显示，screenH = 全屏 ──
+    // 位移用普通 Float 状态，不用 Animatable：拖动发生在 awaitEachGesture 的
+    // 「受限挂起作用域」里，调不了 snapTo，只能每帧 launch 一个协程去设值，
+    // 旧值后到就会把面板拉回去（抽搐）。同步赋值 + 一个可取消的 Job 跑吸附动画最稳。
+    val screenH = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    var panel by remember { mutableFloatStateOf(0f) }
     var panelJob by remember { mutableStateOf<Job?>(null) }
 
     fun settleTo(target: Float) {
         panelJob?.cancel()
         panelJob = scope.launch {
-            animate(panel, target, animationSpec = tween(240, easing = FastOutSlowInEasing)) { v, _ -> panel = v }
+            animate(panel, target, animationSpec = tween(240, easing = FastOutSlowInEasing)) { v, _ ->
+                panel = v
+            }
         }
     }
+    fun openPanel() = settleTo(screenH)
+    fun closePanel() = settleTo(0f)
 
-    // 背景用**图片自己**糊一张，而不是抓屏：
-    // 编辑页的抽屉常驻可见（初始就露着工具栏），抓屏必然把按钮糊进背景。
-    // 图片自身没有这个问题，而且抽屉盖在图片上时颜色天然对得上。
+    // 抽屉背景 = 「屏幕等价图」的模糊版：黑底 + 图片按它在屏幕上真实的矩形画进去，再整体模糊。
+    // 直接糊原图会按原比例铺满，和上层「圆内最大矩形」显示的图片大小对不上。具体合成在图片区里做。
     var bgImage by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
-    LaunchedEffect(sourceBitmap) {
-        val b = sourceBitmap ?: return@LaunchedEffect
-        bgImage = BlurBackdrop.blurBitmapAsync(b)
-    }
-
-    /** 松手 / 点击时吸附到最近档 */
-    fun nearestSnap(v: Float): Float = snaps.minByOrNull { kotlin.math.abs(it - v) } ?: 0f
-    /** 轻点把手：逐档往上，到顶再点回收起 */
-    fun nextSnap(v: Float): Float = snaps.firstOrNull { it > v + 6f } ?: 0f
 
     fun save() {
         val bmp = sourceBitmap ?: return
@@ -197,14 +186,8 @@ fun EditScreen(
         }
     }
 
-    // 选中某个工具时自动把抽屉升到「能看到它的选项」那一档。
-    // 手表屏幕小，点完工具再手动拉一次太累。
     fun selectTool(t: EditTool) {
         tool = if (tool == t) EditTool.NONE else t
-        if (tool != EditTool.NONE) {
-            val target = if (tool == EditTool.ADJUST) snaps[3] else snaps[2]
-            if (panel < target - 2f) settleTo(target)
-        }
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
@@ -224,6 +207,22 @@ fun EditScreen(
                 val (wpx, hpx) = fitLargest(isRound, maxW, maxH, bmp.width, bmp.height)
                 val bmpW = bmp.width
                 val bmpH = bmp.height
+
+                // 用容器的实际像素合成背景（而不是 LocalConfiguration 的屏幕尺寸）：
+                // 后者和真实布局差一点点，背景里的图片就会跟上面那张错开。
+                // 拖滑杆时预览图连续变化，停 80ms 再算，避免算力全花在中间态上。
+                LaunchedEffect(bmp, wpx, hpx, maxW, maxH) {
+                    kotlinx.coroutines.delay(80)
+                    bgImage = BlurBackdrop.blurScreenAsync(
+                        bmp,
+                        maxW.toInt().coerceAtLeast(1),
+                        maxH.toInt().coerceAtLeast(1),
+                        RectF(
+                            (maxW - wpx) / 2f, (maxH - hpx) / 2f,
+                            (maxW + wpx) / 2f, (maxH + hpx) / 2f
+                        )
+                    )
+                }
 
                 Box(
                     Modifier
@@ -333,7 +332,276 @@ fun EditScreen(
             }
         }
 
-        // ── 保存 ──
+        // ── 底部拉起热区 ──
+        // 常驻组合：按 panel 值做条件渲染会让节点在手势中途被移出组合、pointerInput
+        // 协程连带取消，手感是「拉一下就断」。只有那条白线跟着状态显示/隐藏。
+        val showPullLine by remember { derivedStateOf { panel < 1f } }
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(46.dp)
+                .pointerInput(Unit) {
+                    val slop = 10.dp.toPx()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        // 抽屉已经露出来了：这块归面板自己管，别重复拖
+                        if (panel >= 1f) {
+                            while (true) {
+                                val e = awaitPointerEvent()
+                                if (e.changes.all { !it.pressed }) break
+                            }
+                            return@awaitEachGesture
+                        }
+                        var dragged = false
+                        while (true) {
+                            val e = awaitPointerEvent(PointerEventPass.Initial)
+                            if (e.changes.all { !it.pressed }) break
+                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                            val dy = c.position.y - down.position.y
+                            if (!dragged && dy < -slop) dragged = true
+                            if (dragged) {
+                                c.consume()
+                                panelJob?.cancel()
+                                panel = (-dy).coerceIn(0f, screenH)
+                            }
+                        }
+                        // 这里只有 46dp 的行程，拖不到顶，上滑即视为「要打开」
+                        if (dragged) openPanel()
+                    }
+                },
+            contentAlignment = Alignment.BottomCenter
+        ) {
+            if (showPullLine) {
+                Box(
+                    Modifier
+                        .padding(bottom = 10.dp)
+                        .width(44.dp)
+                        .height(3.dp)
+                        .clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.55f))
+                )
+            }
+        }
+
+        // ── 毛玻璃：固定铺满整屏，只露出抽屉盖住的那一块（像素不随面板移动）──
+        if (blurEnabled) {
+            BlurBand(
+                heightPx = { panel },
+                image = bgImage,
+                dim = 0.34f,
+                cornerRadiusPx = with(density) { 22.dp.toPx() },
+                // 模糊图还没做好时垫一块半透明黑，避免先透出原图再跳变
+                fallback = Color.Black.copy(alpha = 0.55f)
+            )
+        }
+
+        // ── 抽屉：整屏高，靠 translationY 控制露出多少；面板自身透明（玻璃板）──
+        Surface(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .height(with(density) { screenH.toDp() })
+                .graphicsLayer { translationY = screenH - panel }
+                // 整块面板都能上下拖；轻点不消费，留给里面的按钮
+                .pointerInput(Unit) {
+                    val slop = 8.dp.toPx()
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val start = panel
+                        var dragged = false
+                        while (true) {
+                            val e = awaitPointerEvent()
+                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
+                            val dy = c.position.y - down.position.y
+                            if (!dragged && kotlin.math.abs(dy) > slop) dragged = true
+                            if (dragged) {
+                                c.consume()
+                                panelJob?.cancel()
+                                panel = (start - dy).coerceIn(0f, screenH)
+                            }
+                            if (!c.pressed) break
+                        }
+                        if (dragged) {
+                            // 拖过一半就全开，否则收回
+                            if (panel > screenH * 0.5f) openPanel() else closePanel()
+                        }
+                    }
+                },
+            color = if (blurEnabled) Color.Transparent else MaterialTheme.colorScheme.surface,
+            tonalElevation = 0.dp,
+            shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)
+        ) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = 10.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // ── 把手：轻点收起（上下拖动交给整块面板）──
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(30.dp)
+                        .pointerInput(Unit) {
+                            detectTapGestures { closePanel() }
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Box(
+                        Modifier
+                            .width(44.dp)
+                            .height(3.dp)
+                            .clip(CircleShape)
+                            .background(Color.White.copy(alpha = 0.55f))
+                    )
+                }
+
+                Spacer(Modifier.height(12.dp))
+
+                // ── 工具行 ──
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Chip("滤镜", tool == EditTool.FILTER, { selectTool(EditTool.FILTER) }, Icons.Filled.AutoAwesome)
+                    Chip("调节", tool == EditTool.ADJUST, { selectTool(EditTool.ADJUST) }, Icons.Filled.Tune)
+                    Chip("裁剪", tool == EditTool.CROP, {
+                        selectTool(EditTool.CROP)
+                        if (tool != EditTool.CROP) cropMode = false
+                    }, Icons.Filled.Crop)
+                    Chip("涂鸦", tool == EditTool.DRAW, { selectTool(EditTool.DRAW) }, Icons.Filled.Draw)
+                    Chip("旋转", tool == EditTool.ROTATE, { selectTool(EditTool.ROTATE) }, Icons.Filled.RotateRight)
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                // ── 当前工具的选项行 ──
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(48.dp)
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    when (tool) {
+                        EditTool.FILTER -> FilterPreset.entries.forEach { f ->
+                            Chip(
+                                label = f.label,
+                                selected = adjustments.filter == f,
+                                onClick = { adjustments = adjustments.copy(filter = f) }
+                            )
+                        }
+                        EditTool.ADJUST -> {
+                            Chip("", false, { tool = EditTool.NONE }, Icons.AutoMirrored.Filled.ArrowBack)
+                            AdjustLabels.forEachIndexed { i, name ->
+                                Chip(name, adjustParam == i, { adjustParam = i })
+                            }
+                        }
+                        EditTool.CROP -> {
+                            Chip(
+                                label = if (cropMode) "选好了" else "拖出选区",
+                                selected = cropMode,
+                                onClick = { cropMode = !cropMode }
+                            )
+                            Chip("清除", false, { cropRect = null; cropMode = false })
+                        }
+                        EditTool.DRAW -> {
+                            listOf(
+                                android.graphics.Color.RED,
+                                android.graphics.Color.YELLOW,
+                                android.graphics.Color.GREEN,
+                                android.graphics.Color.BLUE,
+                                android.graphics.Color.WHITE,
+                                android.graphics.Color.BLACK
+                            ).forEach { c ->
+                                Box(
+                                    Modifier
+                                        .size(34.dp)
+                                        .clip(CircleShape)
+                                        .background(Color(c))
+                                        .border(
+                                            if (currentStrokeColor == c) 2.dp else 1.dp,
+                                            if (currentStrokeColor == c) MaterialTheme.colorScheme.primary
+                                            else Color.Gray,
+                                            CircleShape
+                                        )
+                                        .clickable { currentStrokeColor = c }
+                                )
+                            }
+                            IconChip(Icons.Filled.Undo) { strokes = strokes.dropLast(1) }
+                            IconChip(Icons.Filled.Delete) { strokes = emptyList() }
+                        }
+                        EditTool.ROTATE -> {
+                            // 旋转/翻转会改变坐标系：原来的裁剪框对新方向不再成立，直接清掉，
+                            // 避免「先裁剪再旋转」保存时裁到错的地方。
+                            Chip("90°", false, {
+                                rotation = (rotation + 90) % 360; cropRect = null; cropMode = false
+                            }, Icons.Filled.RotateRight)
+                            Chip("水平", flipH, {
+                                flipH = !flipH; cropRect = null; cropMode = false
+                            }, Icons.Filled.Flip)
+                            Chip("垂直", flipV, {
+                                flipV = !flipV; cropRect = null; cropMode = false
+                            }, Icons.Filled.SwapHoriz)
+                            Chip("重置", false, {
+                                rotation = 0; flipH = false; flipV = false
+                                cropRect = null; cropMode = false
+                            }, Icons.Filled.RestartAlt)
+                        }
+                        else -> Unit
+                    }
+                }
+
+                // ── 调节滑杆（只在调节工具下出现） ──
+                if (tool == EditTool.ADJUST) {
+                    Spacer(Modifier.height(10.dp))
+                    val value = when (adjustParam) {
+                        0 -> adjustments.brightness
+                        1 -> adjustments.contrast
+                        2 -> adjustments.saturation
+                        else -> adjustments.warmth
+                    }
+                    fun setValue(v: Float) {
+                        adjustments = when (adjustParam) {
+                            0 -> adjustments.copy(brightness = v)
+                            1 -> adjustments.copy(contrast = v)
+                            2 -> adjustments.copy(saturation = v)
+                            else -> adjustments.copy(warmth = v)
+                        }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth().height(38.dp).padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CompactSlider(
+                            value = value,
+                            range = -100f..100f,
+                            onChange = { setValue(it) },
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "${value.toInt()}",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textAlign = TextAlign.End,
+                            modifier = Modifier.width(30.dp)
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(16.dp))
+            }
+        }
+
+        // ── 保存：浮在最上层，抽屉全屏铺开时也能点 ──
         Box(
             Modifier
                 .align(Alignment.TopCenter)
@@ -351,277 +619,6 @@ fun EditScreen(
             }
         }
 
-        // ── 抽屉完全收起后的拉起热区 ──
-        // 这块**必须常驻组合**：上一版按 panel 值做条件渲染，刚一拉动 panel 就 > 0、
-        // 节点被移出组合，连它的 pointerInput 协程一起取消 —— 手感就是拉一下就断。
-        // 只有白线跟着收起状态显示/隐藏。
-        // 用 derivedStateOf 把「每帧都变的位移」压成布尔：只在跨越阈值时重组。
-        val showPullLine by remember { derivedStateOf { panel < 1f } }
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(46.dp)
-                .pointerInput(Unit) {
-                    val slop = 6.dp.toPx()
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        // 抽屉已经露出来了：这块归面板自己管，别重复拖
-                        if (panel >= 1f) {
-                            while (true) {
-                                val e = awaitPointerEvent()
-                                if (e.changes.all { !it.pressed }) break
-                            }
-                            return@awaitEachGesture
-                        }
-                        val start = panel
-                        var dragged = false
-                        while (true) {
-                            val e = awaitPointerEvent(PointerEventPass.Initial)
-                            if (e.changes.all { !it.pressed }) break
-                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                            val dy = c.position.y - down.position.y
-                            if (!dragged && dy < -slop) dragged = true
-                            if (dragged) {
-                                c.consume()
-                                panelJob?.cancel()
-                                panel = (start - dy).coerceIn(0f, maxPanel)
-                            }
-                        }
-                        if (dragged) settleTo(nearestSnap(panel))
-                    }
-                },
-            contentAlignment = Alignment.BottomCenter
-        ) {
-            if (showPullLine) {
-                Box(
-                    Modifier
-                        .padding(bottom = 10.dp)
-                        .width(44.dp)
-                        .height(3.dp)
-                        .clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.55f))
-                )
-            }
-        }
-
-        // ── 毛玻璃条：固定贴底，只露出抽屉盖住的那一块（不跟面板一起升降）──
-        if (blurEnabled) {
-            BlurBand(
-                heightPx = { panel },
-                image = bgImage,
-                dim = 0.18f,
-                cornerRadiusPx = with(density) { 22.dp.toPx() },
-                // 模糊图还没做好时先垫一块半透明黑，避免抽屉一下子透出原图又跳变
-                fallback = Color.Black.copy(alpha = 0.42f)
-            )
-        }
-
-        // ── 抽屉：固定 maxPanel 高，靠 translationY 控制露出多少；面板自身透明 ──
-        Surface(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .height(with(density) { maxPanel.toDp() })
-                .graphicsLayer {
-                    // panel 从 0 长到 maxPanel；面板整体下移 (maxPanel - panel)，
-                    // 屏幕上露出的正好是面板顶部那一段，内容不会跟着重排。
-                    translationY = maxPanel - panel
-                }
-                // 整块面板都能上下拖（30dp 的把手在圆屏上太难按）。
-                // 拖动直接在当前协程里 snapTo：每帧 launch 一个协程会出现
-                // 旧值后到、面板来回跳（就是「抽搐」），而且松手后残留的
-                // snapTo 还会把刚吸好的档位又拉回去。
-                .pointerInput(Unit) {
-                    val slop = 8.dp.toPx()
-                    awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
-                        val start = panel
-                        var dragged = false
-                        while (true) {
-                            val e = awaitPointerEvent()
-                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                            val dy = c.position.y - down.position.y
-                            if (!dragged && kotlin.math.abs(dy) > slop) dragged = true
-                            if (dragged) {
-                                c.consume()
-                                // 1:1 跟手，位移不足以拖到最低档时会在松手后吸附到最近档
-                                panelJob?.cancel()
-                                panel = (start - dy).coerceIn(0f, maxPanel)
-                            }
-                            if (!c.pressed) break
-                        }
-                        if (dragged) settleTo(nearestSnap(panel))
-                    }
-                },
-            color = if (blurEnabled) Color.Transparent else MaterialTheme.colorScheme.surface,
-            tonalElevation = 0.dp,
-            shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)
-        ) {
-            Box(Modifier.fillMaxSize()) {
-                Column(
-                    Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 10.dp)
-                ) {
-                    // ── 把手：轻点逐档展开/收起（上下拖动交给整块面板）──
-                    Box(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(30.dp)
-                            .pointerInput(Unit) {
-                                detectTapGestures { settleTo(nextSnap(panel)) }
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Box(
-                            Modifier
-                                .width(40.dp)
-                                .height(3.dp)
-                                .clip(CircleShape)
-                                .background(Color.White.copy(alpha = 0.55f))
-                        )
-                    }
-
-                    // ── 工具行 ──
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Chip("滤镜", tool == EditTool.FILTER, { selectTool(EditTool.FILTER) }, Icons.Filled.AutoAwesome)
-                        Chip("调节", tool == EditTool.ADJUST, { selectTool(EditTool.ADJUST) }, Icons.Filled.Tune)
-                        Chip("裁剪", tool == EditTool.CROP, {
-                            selectTool(EditTool.CROP)
-                            if (tool != EditTool.CROP) cropMode = false
-                        }, Icons.Filled.Crop)
-                        Chip("涂鸦", tool == EditTool.DRAW, { selectTool(EditTool.DRAW) }, Icons.Filled.Draw)
-                        Chip("旋转", tool == EditTool.ROTATE, { selectTool(EditTool.ROTATE) }, Icons.Filled.RotateRight)
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-
-                    // ── 当前工具的选项行 ──
-                    Row(
-                        Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        when (tool) {
-                            EditTool.FILTER -> FilterPreset.entries.forEach { f ->
-                                Chip(
-                                    label = f.label,
-                                    selected = adjustments.filter == f,
-                                    onClick = { adjustments = adjustments.copy(filter = f) }
-                                )
-                            }
-                            EditTool.ADJUST -> {
-                                Chip("", false, { tool = EditTool.NONE }, Icons.AutoMirrored.Filled.ArrowBack)
-                                AdjustLabels.forEachIndexed { i, name ->
-                                    Chip(name, adjustParam == i, { adjustParam = i })
-                                }
-                            }
-                            EditTool.CROP -> {
-                                Chip(
-                                    label = if (cropMode) "选好了" else "拖出选区",
-                                    selected = cropMode,
-                                    onClick = { cropMode = !cropMode }
-                                )
-                                Chip("清除", false, { cropRect = null; cropMode = false })
-                            }
-                            EditTool.DRAW -> {
-                                listOf(
-                                    android.graphics.Color.RED,
-                                    android.graphics.Color.YELLOW,
-                                    android.graphics.Color.GREEN,
-                                    android.graphics.Color.BLUE,
-                                    android.graphics.Color.WHITE,
-                                    android.graphics.Color.BLACK
-                                ).forEach { c ->
-                                    Box(
-                                        Modifier
-                                            .size(34.dp)
-                                            .clip(CircleShape)
-                                            .background(Color(c))
-                                            .border(
-                                                if (currentStrokeColor == c) 2.dp else 1.dp,
-                                                if (currentStrokeColor == c) MaterialTheme.colorScheme.primary
-                                                else Color.Gray,
-                                                CircleShape
-                                            )
-                                            .clickable { currentStrokeColor = c }
-                                    )
-                                }
-                                IconChip(Icons.Filled.Undo) { strokes = strokes.dropLast(1) }
-                                IconChip(Icons.Filled.Delete) { strokes = emptyList() }
-                            }
-                            EditTool.ROTATE -> {
-                                // 旋转/翻转会改变坐标系：原来的裁剪框对新方向不再成立，直接清掉，
-                                // 避免「先裁剪再旋转」保存时裁到错的地方。
-                                Chip("90°", false, {
-                                    rotation = (rotation + 90) % 360; cropRect = null; cropMode = false
-                                }, Icons.Filled.RotateRight)
-                                Chip("水平", flipH, {
-                                    flipH = !flipH; cropRect = null; cropMode = false
-                                }, Icons.Filled.Flip)
-                                Chip("垂直", flipV, {
-                                    flipV = !flipV; cropRect = null; cropMode = false
-                                }, Icons.Filled.SwapHoriz)
-                                Chip("重置", false, {
-                                    rotation = 0; flipH = false; flipV = false
-                                    cropRect = null; cropMode = false
-                                }, Icons.Filled.RestartAlt)
-                            }
-                            else -> Unit
-                        }
-                    }
-
-                    // ── 调节滑杆（只在调节工具下出现，占第三行） ──
-                    if (tool == EditTool.ADJUST) {
-                        Spacer(Modifier.height(6.dp))
-                        val value = when (adjustParam) {
-                            0 -> adjustments.brightness
-                            1 -> adjustments.contrast
-                            2 -> adjustments.saturation
-                            else -> adjustments.warmth
-                        }
-                        fun setValue(v: Float) {
-                            adjustments = when (adjustParam) {
-                                0 -> adjustments.copy(brightness = v)
-                                1 -> adjustments.copy(contrast = v)
-                                2 -> adjustments.copy(saturation = v)
-                                else -> adjustments.copy(warmth = v)
-                            }
-                        }
-                        Row(
-                            Modifier.fillMaxWidth().height(38.dp).padding(horizontal = 4.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            CompactSlider(
-                                value = value,
-                                range = -100f..100f,
-                                onChange = { setValue(it) },
-                                modifier = Modifier.weight(1f)
-                            )
-                            Spacer(Modifier.width(10.dp))
-                            Text(
-                                "${value.toInt()}",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                textAlign = TextAlign.End,
-                                modifier = Modifier.width(30.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
     }
 }
 
