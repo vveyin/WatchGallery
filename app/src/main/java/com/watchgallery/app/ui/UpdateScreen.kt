@@ -53,6 +53,14 @@ fun UpdateScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<UpdateState>(UpdateState.Idle) }
+    // 启动检测已经把新版本信息放进 ViewModel：直接展示「发现新版本」，不重复请求
+    val pendingUpdate by viewModel.pendingUpdate.collectAsState()
+    LaunchedEffect(pendingUpdate) {
+        pendingUpdate?.let {
+            viewModel.consumePendingUpdate()
+            state = UpdateState.Found(it)
+        }
+    }
     // 表冠驱动滚动：更新说明较长时可像其它页面一样用表冠浏览
     val scrollState = rememberCrownScrollState(crownEvents)
 
