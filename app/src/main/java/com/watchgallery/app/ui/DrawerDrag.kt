@@ -41,6 +41,9 @@ internal suspend fun AwaitPointerEventScope.trackVerticalDrag(
     while (true) {
         val event = awaitPointerEvent()
         val change = event.changes.firstOrNull { it.id == down.id } ?: break
+        // 还没开始拖就发现有别的控件把事件吃掉了（滑杆、横向列表）：
+        // 把手势让给它，避免「调亮度顺手把抽屉拖下来」。
+        if (!dragged && change.isConsumed) break
         val dy = change.position.y - change.previousPosition.y
         total += dy
 
