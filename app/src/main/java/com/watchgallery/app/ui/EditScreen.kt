@@ -397,9 +397,8 @@ fun EditScreen(
         }
 
         // ── 抽屉：整屏高，靠 translationY 控制露出多少；面板自身透明（玻璃板）──
-        // 拖动时面板自己在动，而 pointerInput 拿到的 position 是**面板局部坐标**：
-        // 面板下移多少，同一根手指的局部 y 就跟着减多少 —— 两者正好抵消，dy 恒为 0，
-        // 表现就是「拉上来之后怎么划都不动」。所以把局部 y 加回当前位移换算成屏幕 y 再求差。
+        // 拖动交给 trackVerticalDrag：它只累加相邻两帧的位移差，与面板自身移动无关，
+        // 所以「面板跟着手指跑」也不会把位移抵消掉。
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -412,24 +411,17 @@ fun EditScreen(
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val start = panel
-                        val startTy = screenH - start
-                        var dragged = false
-                        while (true) {
-                            val e = awaitPointerEvent()
-                            val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                            // 屏幕 y = 局部 y + 面板当前 translationY
-                            val dy = (c.position.y + (screenH - panel)) - (down.position.y + startTy)
-                            if (!dragged && kotlin.math.abs(dy) > slop) dragged = true
-                            if (dragged) {
-                                c.consume()
-                                panelJob?.cancel()
-                                panel = (start - dy).coerceIn(0f, screenH)
-                            }
-                            if (!c.pressed) break
+                        // total 向下为正：面板露出量 panel 越大 = 越往上铺开，所以取负号
+                        val drag = trackVerticalDrag(down, slop) { total ->
+                            panelJob?.cancel()
+                            panel = (start - total).coerceIn(0f, screenH)
                         }
-                        if (dragged) {
-                            // 拖过一半就全开，否则收回
-                            if (panel > screenH * 0.5f) openPanel() else closePanel()
+                        if (drag.dragged) {
+                            // 两态抽屉：往下拖够 1/4 屏、或者快速下甩，就收到「不显示」。
+                            // 以前按半屏判定 —— 手表屏幕本来就小，起手位置又常在中间，
+                            // 根本拖不到半屏，松手只能弹回全屏，看起来就是「放下又自动往上走」。
+                            val flick = drag.velocity > 900f && drag.total > screenH * 0.06f
+                            if (drag.total > screenH * 0.22f || flick) closePanel() else openPanel()
                         }
                     }
                 },

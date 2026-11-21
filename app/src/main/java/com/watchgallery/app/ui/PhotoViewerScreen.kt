@@ -171,9 +171,13 @@ fun PhotoViewerScreen(
         settleDrawer(screenH)
         scope.launch {
             delay(280)
-            // 面板完全滑出去之后再开门补一张干净的大图
-            BlurBackdrop.setCovered(false)
-            if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 80)
+            // 这 280ms 里用户可能又把抽屉拉回来了：那就别开门，
+            // 否则会把已经露出的面板拍进背景，出现「编辑按钮被糊进底图」的残影
+            if (!drawerOpen) {
+                // 面板完全滑出去之后再开门补一张干净的大图
+                BlurBackdrop.setCovered(false)
+                if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 80)
+            }
         }
     }
 
@@ -527,9 +531,7 @@ fun PhotoViewerScreen(
             }
 
             // ── 抽屉面板：整屏高，靠 translationY 升降，自身透明（玻璃板）──
-            // 面板自己在动，pointerInput 的 position 是面板局部坐标：面板下移多少，
-            // 同一根手指的局部 y 就跟着减多少，两者抵消后 dy 恒为 0（表现为划不动）。
-            // 把局部 y 加回当前 translationY 换算成屏幕 y 再求差。
+            // 拖动交给 trackVerticalDrag：只累加相邻两帧的位移差，面板自己跟着手指动也不会抵消。
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -542,22 +544,16 @@ fun PhotoViewerScreen(
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             val start = drawerY
-                            val startTy = start
-                            var dragged = false
-                            while (true) {
-                                val e = awaitPointerEvent()
-                                val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                                val dy = (c.position.y + drawerY) - (down.position.y + startTy)
-                                if (!dragged && abs(dy) > slop) dragged = true
-                                if (dragged) {
-                                    c.consume()
-                                    drawerJob?.cancel()
-                                    drawerY = (start - dy).coerceIn(0f, screenH)
-                                }
-                                if (!c.pressed) break
+                            // 这里 drawerY 越大 = 面板越靠下（越收起），拖到下面就是加
+                            val drag = trackVerticalDrag(down, slop) { total ->
+                                drawerJob?.cancel()
+                                drawerY = (start + total).coerceIn(0f, screenH)
                             }
-                            if (dragged) {
-                                if (drawerY > screenH * 0.42f) closeDrawer() else openDrawer()
+                            if (drag.dragged) {
+                                // 往下拖够 1/4 屏、或者快速下甩，就收起；否则铺满。
+                                // 阈值不能按半屏算：手表屏幕小，起手位置常在中间，拖不到就只会弹回去。
+                                val flick = drag.velocity > 900f && drag.total > screenH * 0.06f
+                                if (drag.total > screenH * 0.22f || flick) closeDrawer() else openDrawer()
                             }
                         }
                     },
