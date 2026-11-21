@@ -397,6 +397,9 @@ fun EditScreen(
         }
 
         // ── 抽屉：整屏高，靠 translationY 控制露出多少；面板自身透明（玻璃板）──
+        // 拖动时面板自己在动，而 pointerInput 拿到的 position 是**面板局部坐标**：
+        // 面板下移多少，同一根手指的局部 y 就跟着减多少 —— 两者正好抵消，dy 恒为 0，
+        // 表现就是「拉上来之后怎么划都不动」。所以把局部 y 加回当前位移换算成屏幕 y 再求差。
         Surface(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
@@ -409,11 +412,13 @@ fun EditScreen(
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val start = panel
+                        val startTy = screenH - start
                         var dragged = false
                         while (true) {
                             val e = awaitPointerEvent()
                             val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                            val dy = c.position.y - down.position.y
+                            // 屏幕 y = 局部 y + 面板当前 translationY
+                            val dy = (c.position.y + (screenH - panel)) - (down.position.y + startTy)
                             if (!dragged && kotlin.math.abs(dy) > slop) dragged = true
                             if (dragged) {
                                 c.consume()
@@ -436,14 +441,13 @@ fun EditScreen(
                 Modifier
                     .fillMaxSize()
                     .padding(horizontal = 10.dp),
-                verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // ── 把手：轻点收起（上下拖动交给整块面板）──
+                // ── 把手贴着面板顶边：一眼看出这是抽屉的上沿（轻点收起）──
                 Box(
                     Modifier
                         .fillMaxWidth()
-                        .height(30.dp)
+                        .height(28.dp)
                         .pointerInput(Unit) {
                             detectTapGestures { closePanel() }
                         },
@@ -458,7 +462,7 @@ fun EditScreen(
                     )
                 }
 
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.weight(1f))
 
                 // ── 工具行 ──
                 Row(
@@ -597,7 +601,7 @@ fun EditScreen(
                     }
                 }
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.weight(1f))
             }
         }
 
@@ -605,7 +609,7 @@ fun EditScreen(
         Box(
             Modifier
                 .align(Alignment.TopCenter)
-                .padding(top = 6.dp)
+                .padding(top = 30.dp)
                 .size(34.dp)
                 .clip(CircleShape)
                 .background(Color.Black.copy(alpha = 0.45f))

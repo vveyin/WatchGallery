@@ -527,6 +527,9 @@ fun PhotoViewerScreen(
             }
 
             // ── 抽屉面板：整屏高，靠 translationY 升降，自身透明（玻璃板）──
+            // 面板自己在动，pointerInput 的 position 是面板局部坐标：面板下移多少，
+            // 同一根手指的局部 y 就跟着减多少，两者抵消后 dy 恒为 0（表现为划不动）。
+            // 把局部 y 加回当前 translationY 换算成屏幕 y 再求差。
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
@@ -539,11 +542,12 @@ fun PhotoViewerScreen(
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             val start = drawerY
+                            val startTy = start
                             var dragged = false
                             while (true) {
                                 val e = awaitPointerEvent()
                                 val c = e.changes.firstOrNull { it.id == down.id } ?: break
-                                val dy = c.position.y - down.position.y
+                                val dy = (c.position.y + drawerY) - (down.position.y + startTy)
                                 if (!dragged && abs(dy) > slop) dragged = true
                                 if (dragged) {
                                     c.consume()
@@ -565,14 +569,13 @@ fun PhotoViewerScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .padding(horizontal = 16.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // 把手：轻点收起（上下拖动交给整块面板）
+                    // 把手贴着面板顶边：一眼看出这是抽屉的上沿（轻点收起）
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .height(30.dp)
+                            .height(28.dp)
                             .pointerInput(Unit) { detectTapGestures { closeDrawer() } },
                         contentAlignment = Alignment.Center
                     ) {
@@ -585,7 +588,7 @@ fun PhotoViewerScreen(
                         )
                     }
 
-                    Spacer(Modifier.height(18.dp))
+                    Spacer(Modifier.weight(1f))
 
                     // 功能列表：现在只有「编辑」，以后加功能直接往下排
                     Button(
@@ -603,7 +606,7 @@ fun PhotoViewerScreen(
                         Text("编辑", style = MaterialTheme.typography.labelLarge)
                     }
 
-                    Spacer(Modifier.height(18.dp))
+                    Spacer(Modifier.weight(1f))
                 }
             }
 
