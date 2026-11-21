@@ -18,6 +18,7 @@ import com.watchgallery.app.edit.ImageEditor
 import com.watchgallery.app.edit.Stroke
 import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.ImageSaver
+import com.watchgallery.app.util.ReleaseInfo
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -82,6 +83,15 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
+
+    // ── 启动自动检查到的新版本 ──
+    /** 冷启动联网检测到的新版本；更新页读取后立即清空，避免下次手动进入时重复展示 */
+    private val _pendingUpdate = MutableStateFlow<ReleaseInfo?>(null)
+    val pendingUpdate: StateFlow<ReleaseInfo?> = _pendingUpdate
+
+    fun setPendingUpdate(info: ReleaseInfo) { _pendingUpdate.value = info }
+
+    fun consumePendingUpdate() { _pendingUpdate.value = null }
 
     // ── 多选状态 ──
     /** 是否处于多选模式 */
