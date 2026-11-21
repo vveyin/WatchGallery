@@ -205,6 +205,7 @@ fun GalleryScreen(
                 onLongPress = { viewModel.enterSelectionMode(it) },
                 onToggle = { viewModel.toggleSelected(it) },
                 onSelectRange = { viewModel.addSelected(it) },
+                onDeselectRange = { viewModel.removeSelected(it) },
                 onCancelSelection = { viewModel.exitSelectionMode() },
                 onDeleteSelected = { viewModel.deleteSelected() }
             )
@@ -319,6 +320,7 @@ private fun ScalingPhotoList(
     onLongPress: (String) -> Unit,
     onToggle: (String) -> Unit,
     onSelectRange: (Collection<String>) -> Unit,
+    onDeselectRange: (Collection<String>) -> Unit,
     onCancelSelection: () -> Unit,
     onDeleteSelected: () -> Unit
 ) {
@@ -352,12 +354,14 @@ private fun ScalingPhotoList(
     // 手势开始时读取最新的多选状态。不能拿它当 pointerInput 的 key —— 长按进入多选后
     // 状态翻转会让手势协程重启，后续拖动就收不到了。
     val selectionModeState = rememberUpdatedState(selectionMode)
+    // 同理：手势里要判断「起点这张是不是已经选了」来定加选/取消，必须读最新值
+    val selectedUrisState = rememberUpdatedState(selectedUris)
 
-    // 起点→当前点的矩形覆盖到的照片全部加入选中。
+    // 起点→当前点的矩形覆盖到的照片批量加选 / 批量取消。
     // 四周加 3px，保证纯横向/纵向划动（矩形某一边为 0）也能命中最外一行/列。
-    // gestureHits 记录本次手势已上报过的照片，只上报新增的，避免每个移动事件都重建选中集合。
+    // gestureHits 记录本次手势已处理过的照片，只上报新增的，避免每个移动事件都重建选中集合。
     val gestureHits = remember { mutableSetOf<String>() }
-    fun selectInRect(a: Offset, b: Offset) {
+    fun applyRect(a: Offset, b: Offset, deselect: Boolean) {
         val pad = 3f
         val r = Rect(
             left = minOf(a.x, b.x) - pad,
@@ -369,7 +373,9 @@ private fun ScalingPhotoList(
         for ((uri, cell) in cellRects) {
             if (cell.overlaps(r) && gestureHits.add(uri)) fresh.add(uri)
         }
-        if (fresh.isNotEmpty()) onSelectRange(fresh)
+        if (fresh.isNotEmpty()) {
+            if (deselect) onDeselectRange(fresh) else onSelectRange(fresh)
+        }
     }
 
     // 表冠滚动：照搬 f-x，事件到达直接 scrollBy，即时跟手、无阻尼。
@@ -497,11 +503,12 @@ private fun ScalingPhotoList(
                                         }
                                         // 长按成立：以长按点为锚点，立刻按普通滑动多选处理
                                         // （不触发轻点，长按本身已选中这张照片）
+                                        // 长按是「从这里开始多选」的动作，所以这个手势永远只加选
                                         gestureHits.clear()
                                         runSelectionDrag(
                                             down = down,
                                             onScroll = { selectionScroll.tryEmit(it) },
-                                            onSelectRect = { a, b -> selectInRect(a, b) },
+                                            onSelectRect = { a, b -> applyRect(a, b, deselect = false) },
                                             allowTap = false,
                                             onTapAt = {}
                                         )
@@ -545,6 +552,7 @@ private fun ScalingPhotoList(
 
         // 多选模式下的手势层（手机厂商相册逻辑：按方向区分意图，判定一次即锁定）：
         //  - 横向滑动（|dx| > |dy|，45° 为分界）= 快捷多选：起点到当前位置的矩形覆盖到的照片全部选中；
+        //    起手那张**已经选中**时反转为快捷键取消（滑过的都取消选中）
         //  - 纵向滑动（|dy| ≥ |dx|）= 滚动图片列表；
         //  - 横向锁定后不松手再纵向滑动，仍只是扩大选取矩形，不会切成滚动；
         //  - 轻点照片 = 打开大图查看；轻点右上角复选圈 = 切换这张的选中状态。
@@ -558,20 +566,24 @@ private fun ScalingPhotoList(
                             val down = awaitFirstDown(requireUnconsumed = false)
                             down.consume()
                             gestureHits.clear()
+                            // 加选还是取消，由「起点这张照片当前是否已选中」决定（手机相册同款）：
+                            // 从已选中的照片起手 → 整个滑动过程都是取消；从未选中的起手 → 加选。
+                            // 这样同一个手势既能快速多选，也能快速反选，不用换按钮。
+                            val startUri = hitCellOrNearest(cellRects, down.position, nearestSlopPx)
+                            val deselect = startUri != null && startUri in selectedUrisState.value
                             runSelectionDrag(
                                 down = down,
                                 onScroll = { selectionScroll.tryEmit(it) },
-                                onSelectRect = { a, b -> selectInRect(a, b) },
+                                onSelectRect = { a, b -> applyRect(a, b, deselect) },
                                 allowTap = true,
                                 onTapAt = { p ->
-                                    val uri = hitCellOrNearest(cellRects, p, nearestSlopPx)
-                                    if (uri != null) {
-                                        val cell = cellRects[uri]
+                                    if (startUri != null) {
+                                        val cell = cellRects[startUri]
                                         // 点在复选圈上才算「选择」，点照片本体是打开大图
                                         if (cell != null && inCheckCircle(cell, p, circleInsetPx, circleRadiusPx)) {
-                                            onToggle(uri)
+                                            onToggle(startUri)
                                         } else {
-                                            onOpenPhoto(uri)
+                                            onOpenPhoto(startUri)
                                         }
                                     }
                                 }
