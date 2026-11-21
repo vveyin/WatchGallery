@@ -14,6 +14,7 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -64,6 +65,15 @@ fun ScalingScrollColumn(
 }
 
 /**
+ * 列表项要不要做「居中放大 / 边缘缩小」。
+ *
+ * 圆屏靠它让中间那条看起来是满宽、避开弧边；方屏整屏是直角矩形，这套形变没有意义，
+ * 反而会让上下两条明显变小。开关由 MainActivity 按「屏幕形状」统一提供，
+ * 设置列表、相册列表、诊断页等所有用 [scalingItem] / settingItem 的地方一起生效。
+ */
+val LocalCenterMagnify = staticCompositionLocalOf { true }
+
+/**
  * 列表项「只缩不放」的圆屏形变 + 边缘淡出（按钮、标题用）—— 参照 Wear OS 官方
  * TransformingLazyColumn + SurfaceTransformation：居中项是正常大小，越靠边缘越缩小淡出。
  *
@@ -76,6 +86,7 @@ fun ScalingScrollColumn(
  */
 @Composable
 fun Modifier.scalingItem(key: String, scale: Boolean = true): Modifier {
+    val magnify = LocalCenterMagnify.current
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val centerY = remember(key) { mutableFloatStateOf(-1f) }
@@ -94,7 +105,7 @@ fun Modifier.scalingItem(key: String, scale: Boolean = true): Modifier {
             // 导致 scale 恢复 1.0「突然变大」。
             if (measured.value && vc > 0f) {
                 val t = (abs(cy - vc) / (vc * 1.05f)).coerceIn(0f, 1f)
-                if (scale) {
+                if (scale && magnify) {
                     // 只缩不放：居中 1.00 → 边缘 0.70，永不超出布局占位、按钮不再重叠
                     val s = 1.0f - 0.30f * (t * t)
                     scaleX = s

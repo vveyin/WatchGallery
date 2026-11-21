@@ -1,6 +1,7 @@
 package com.watchgallery.app
 
 import android.content.Context
+import android.graphics.Rect
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Bundle
@@ -25,7 +26,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -274,6 +278,20 @@ private fun AppNavigation(
     }
     val crownEvents = viewModel.crownEvents
 
+    // ── 屏蔽系统手势（仅 Android 10+）──
+    // 把整个窗口登记成系统手势排除区：边缘滑动不再被系统当成「返回 / 退出」，
+    // 全部交给应用自己的右划返回、抽屉拖动。低版本没有这套 API，设置里也不显示这一项。
+    val blockGestures by viewModel.blockGestures.collectAsState()
+    val rootView = LocalView.current
+    var rootSize by remember { mutableStateOf(IntSize.Zero) }
+    LaunchedEffect(blockGestures, rootSize) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val w = if (rootSize.width > 0) rootSize.width else rootView.width
+            val h = if (rootSize.height > 0) rootSize.height else rootView.height
+            applyGestureExclusion(rootView, blockGestures && w > 0 && h > 0, w, h)
+        }
+    }
+
     // ── 设置抽屉状态 ──
     val density = LocalDensity.current
     val collapsedY = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
@@ -403,7 +421,10 @@ private fun AppNavigation(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize()) {
+    // 方屏（设置里选方屏，或系统就是方屏）关掉所有列表的「居中放大」：
+    // 直角矩形上这套形变只会让上下两条莫名变小。
+    CompositionLocalProvider(LocalCenterMagnify provides isRound) {
+    Box(modifier = Modifier.fillMaxSize().onSizeChanged { rootSize = it }) {
         // ── 相册常驻最底层 ──
         // 进大图 / 编辑 / 更新时**不卸载**它：以前是"有下层才套 SwipeBackContainer"，
         // 退出大图时条件翻转，整棵相册树被重建 —— 缩略图全部重新解码，
@@ -450,6 +471,19 @@ private fun AppNavigation(
 
         SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
     }
+    }
+}
+
+/**
+ * 把整个窗口登记为「系统手势排除区」。
+ *
+ * `systemGestureExclusionRects` 是 API 29 起才有的能力，调用点已经用
+ * `Build.VERSION.SDK_INT >= Q` 包住；关掉时传空表，立刻把排除区收回。
+ */
+@androidx.annotation.RequiresApi(Build.VERSION_CODES.Q)
+private fun applyGestureExclusion(view: android.view.View, on: Boolean, w: Int, h: Int) {
+    view.systemGestureExclusionRects =
+        if (on) listOf(Rect(0, 0, w, h)) else emptyList()
 }
 
 private sealed class Screen {

@@ -23,6 +23,7 @@ import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
+import android.os.Build
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Label
@@ -172,6 +173,7 @@ private fun SettingsMain(
     val showZoomButtons by viewModel.showZoomButtons.collectAsState()
     val blurBackdrop by viewModel.blurBackdrop.collectAsState()
     val animateGifs by viewModel.animateGifs.collectAsState()
+    val blockGestures by viewModel.blockGestures.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
     val hiddenFolders by viewModel.hiddenFolders.collectAsState()
     val report by viewModel.scanReport.collectAsState()
@@ -284,6 +286,21 @@ private fun SettingsMain(
                 onClick = { viewModel.setBlurBackdrop(!blurBackdrop) },
                 itemKey = "row_blur"
             )
+        }
+        // ── 屏蔽系统手势 ──
+        // `setSystemGestureExclusionRects` 是 Android 10（API 29）才有的 API，
+        // 低版本既没有这个能力、也没有「边缘返回」这类系统手势，所以整项都不显示。
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            item(key = "row_gesture") {
+                SettingButton(
+                    icon = Icons.Filled.Block,
+                    title = "屏蔽系统手势",
+                    subtitle = if (blockGestures) "开 · 边缘滑动只交给应用处理"
+                    else "关 · 系统手势优先（左滑可能退出）",
+                    onClick = { viewModel.setBlockGestures(!blockGestures) },
+                    itemKey = "row_gesture"
+                )
+            }
         }
         item(key = "row_theme") {
             SettingButton(
@@ -784,6 +801,7 @@ private fun DiagLine(label: String, value: String) {
  */
 @Composable
 private fun Modifier.settingItem(key: String, scale: Boolean = true): Modifier {
+    val magnify = LocalCenterMagnify.current
     val density = LocalDensity.current
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val centerY = remember(key) { mutableFloatStateOf(-1f) }
@@ -800,7 +818,7 @@ private fun Modifier.settingItem(key: String, scale: Boolean = true): Modifier {
             val vc = screenHeightPx / 2f
             if (measured.value && vc > 0f) {
                 val t = (abs(cy - vc) / (vc * 1.02f)).coerceIn(0f, 1f)
-                if (scale) {
+                if (scale && magnify) {
                     // 居中 1.12 → 边缘 0.76，二次曲线让中间那块更「聚」
                     val s = 1.12f - 0.36f * (t * t)
                     scaleX = s

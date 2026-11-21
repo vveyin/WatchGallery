@@ -211,6 +211,21 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 屏蔽系统手势（仅 Android 10+）。
+     *
+     * 开启后由 MainActivity 把整个窗口登记成「系统手势排除区」：边缘滑动不再被系统
+     * 拿去当返回 / 退出手势，全部交给应用自己的右划返回和抽屉拖动。
+     * 低版本没有这套 API，设置里也不会显示这一项。
+     */
+    private val _blockGestures = MutableStateFlow(prefs.getBoolean("block_gestures", false))
+    val blockGestures: StateFlow<Boolean> = _blockGestures
+
+    fun setBlockGestures(on: Boolean) {
+        _blockGestures.value = on
+        prefs.edit().putBoolean("block_gestures", on).apply()
+    }
+
+    /**
      * 屏幕形状：自动 / 圆屏 / 方屏。
      *
      * 系统 `SCREENLAYOUT_ROUND` 在部分设备上不准；而且圆屏那套「列表中间放大、
