@@ -11,8 +11,11 @@ import androidx.lifecycle.viewModelScope
 import com.watchgallery.app.data.Album
 import com.watchgallery.app.data.CrownMode
 import com.watchgallery.app.data.CrownPrefs
+import com.watchgallery.app.data.FolderEntry
 import com.watchgallery.app.data.MediaRepository
 import com.watchgallery.app.data.Photo
+import com.watchgallery.app.data.buildFolders
+import com.watchgallery.app.data.isFolderHidden
 import com.watchgallery.app.edit.EditAdjustments
 import com.watchgallery.app.edit.ImageEditor
 import com.watchgallery.app.edit.Stroke
@@ -23,16 +26,24 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+/** 照片列表的两种浏览方式 */
+enum class GalleryViewMode { FLAT, FOLDER }
 
 class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = MediaRepository(app)
     private val prefs = app.getSharedPreferences("watch_gallery", Context.MODE_PRIVATE)
 
-    /** 完整扫描结果（供大图翻页用），不直接给列表渲染 */
-    private val allPhotos = MutableStateFlow<List<Photo>>(emptyList())
+    /** 完整扫描结果（未过滤），大图翻页与文件夹树都从这里派生 */
+    private val _allPhotos = MutableStateFlow<List<Photo>>(emptyList())
+    val allPhotosFlow: StateFlow<List<Photo>> = _allPhotos
 
     /** 每页条数 */
     private val pageSize = 30
@@ -41,9 +52,91 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _visibleCount = MutableStateFlow(pageSize)
     val visibleCount: StateFlow<Int> = _visibleCount
 
-    /** 列表可见的照片（分页切片） */
-    private val _photos = MutableStateFlow<List<Photo>>(emptyList())
-    val photos: StateFlow<List<Photo>> = _photos
+    // ── 浏览方式：平铺 / 文件夹 ──
+    private val _viewMode = MutableStateFlow(
+        if (prefs.getString("view_mode", "flat") == "folder") GalleryViewMode.FOLDER
+        else GalleryViewMode.FLAT
+    )
+    val viewMode: StateFlow<GalleryViewMode> = _viewMode
+
+    fun setViewMode(mode: GalleryViewMode) {
+        _viewMode.value = mode
+        prefs.edit().putString("view_mode", if (mode == GalleryViewMode.FOLDER) "folder" else "flat").apply()
+    }
+
+    fun toggleViewMode() {
+        setViewMode(if (_viewMode.value == GalleryViewMode.FLAT) GalleryViewMode.FOLDER else GalleryViewMode.FLAT)
+    }
+
+    // ── 隐藏文件夹 ──
+    /** 被隐藏的文件夹完整路径；隐藏父目录时子目录一起隐藏 */
+    private val _hiddenFolders = MutableStateFlow(
+        prefs.getStringSet("hidden_folders", emptySet())?.toSet() ?: emptySet()
+    )
+    val hiddenFolders: StateFlow<Set<String>> = _hiddenFolders
+
+    fun setFolderHidden(path: String, hidden: Boolean) {
+        val cur = _hiddenFolders.value
+        val next = if (hidden) cur + path else cur - path
+        if (next == cur) return
+        _hiddenFolders.value = next
+        prefs.edit().putStringSet("hidden_folders", HashSet(next)).apply()
+    }
+
+    fun toggleFolderHidden(path: String) {
+        setFolderHidden(path, path !in _hiddenFolders.value)
+    }
+
+    /** 隐藏过滤后的全部照片：两种浏览方式、大图翻页、文件夹树都基于它 */
+    private val visiblePhotos: StateFlow<List<Photo>> =
+        combine(_allPhotos, _hiddenFolders) { list, hidden ->
+            if (hidden.isEmpty()) list
+            else list.filter { !isFolderHidden(it.folderPath, hidden) }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 列表可见的照片（分页切片，平铺模式用） */
+    val photos: StateFlow<List<Photo>> =
+        combine(visiblePhotos, _visibleCount) { list, count ->
+            if (list.size <= count) list else list.take(count)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 照片总数（已过滤隐藏文件夹） */
+    val totalCountFlow: StateFlow<Int> =
+        visiblePhotos.map { it.size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    /** 文件夹视图：只含「直接有图片」的文件夹（已过滤隐藏） */
+    val folders: StateFlow<List<FolderEntry>> =
+        visiblePhotos.map { buildFolders(it) }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 所有识别到有图片的文件夹（包含已被隐藏的，供设置里取消隐藏） */
+    val allFolders: StateFlow<List<FolderEntry>> =
+        _allPhotos.map { buildFolders(it) }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    // ── 当前打开的文件夹 ──
+    private val _openFolder = MutableStateFlow<String?>(null)
+    val openFolder: StateFlow<String?> = _openFolder
+
+    fun openFolder(path: String) {
+        if (_selectionMode.value) exitSelectionMode()
+        _openFolder.value = path
+    }
+
+    fun closeFolder() {
+        if (_selectionMode.value) exitSelectionMode()
+        _openFolder.value = null
+    }
+
+    /** 当前打开的文件夹里的照片（直接属于该目录，不含子目录） */
+    val folderPhotos: StateFlow<List<Photo>> =
+        combine(visiblePhotos, _openFolder) { list, path ->
+            if (path == null) emptyList() else list.filter { it.folderPath == path }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+
+    /** 大图翻页用的列表：在文件夹里就翻该文件夹，否则翻全部 */
+    val viewerPhotos: StateFlow<List<Photo>> =
+        combine(visiblePhotos, _openFolder) { list, path ->
+            if (path == null) list else list.filter { it.folderPath == path }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     private val _albums = MutableStateFlow<List<Album>>(emptyList())
     val albums: StateFlow<List<Album>> = _albums
@@ -123,7 +216,19 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 在已有选择基础上追加（用于滑动框选，不清除之前选中的） */
     fun addSelected(uris: Collection<String>) {
-        _selectedUris.value = _selectedUris.value + uris
+        if (uris.isEmpty()) return
+        val cur = _selectedUris.value
+        val next = cur + uris
+        // 没有真正新增就不要动 state：否则每个移动事件都会触发一次全列表重组
+        if (next.size != cur.size) _selectedUris.value = next
+    }
+
+    /** 从已选中移除（滑动快捷取消选择用） */
+    fun removeSelected(uris: Collection<String>) {
+        if (uris.isEmpty()) return
+        val cur = _selectedUris.value
+        val next = cur - uris.toSet()
+        if (next.size != cur.size) _selectedUris.value = next
     }
 
     // ── 删除（走系统确认弹窗）──
@@ -159,7 +264,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     fun deleteSelected() {
         val uris = _selectedUris.value
         if (uris.isEmpty()) return
-        val targets = allPhotos.value.filter { it.uri.toString() in uris }
+        val targets = _allPhotos.value.filter { it.uri.toString() in uris }
         if (targets.isEmpty()) {
             exitSelectionMode()
             return
@@ -285,23 +390,23 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             _isLoading.value = true
             val result = repo.scan()
-            allPhotos.value = result.photos
+            _allPhotos.value = result.photos
             _visibleCount.value = pageSize
-            _photos.value = result.photos.take(pageSize)
             _albums.value = repo.toAlbums(result.photos)
             _scanReport.value = result.report
             _isLoading.value = false
+            // 当前打开的文件夹如果已经不存在（照片被删光），退回文件夹列表
+            val open = _openFolder.value
+            if (open != null && result.photos.none { it.folderPath == open }) _openFolder.value = null
         }
     }
 
     /** 滑到列表底部时追加下一批，避免一次性渲染全部照片 */
     fun loadMore() {
-        val total = allPhotos.value.size
+        val total = totalCountFlow.value
         val current = _visibleCount.value
         if (current >= total) return
-        val next = (current + pageSize).coerceAtMost(total)
-        _visibleCount.value = next
-        _photos.value = allPhotos.value.take(next)
+        _visibleCount.value = (current + pageSize).coerceAtMost(total)
     }
 
     /** 从系统文件选择器导入照片（复制进应用私有目录，之后一定读得到） */
@@ -312,12 +417,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             val ok = repo.importFromUris(uris)
             _message.value = if (ok > 0) "已导入 $ok 张照片" else "导入失败"
             val result = repo.scan()
-            allPhotos.value = result.photos
+            _allPhotos.value = result.photos
             _visibleCount.value = pageSize
-            _photos.value = result.photos.take(pageSize)
             _albums.value = repo.toAlbums(result.photos)
             _scanReport.value = result.report
             _isLoading.value = false
+            // 当前打开的文件夹如果已经不存在（照片被删光），退回文件夹列表
+            val open = _openFolder.value
+            if (open != null && result.photos.none { it.folderPath == open }) _openFolder.value = null
         }
     }
 
@@ -372,16 +479,6 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 _message.value = "保存失败：${e.message}"
                 onDone(false)
             }
-        }
-    }
-
-    /** 大图翻页用的完整列表（不受分页显示条数影响） */
-    val allPhotosFlow: StateFlow<List<Photo>> = allPhotos
-
-    /** 照片总数（列表判断能否加载更多） */
-    val totalCountFlow: StateFlow<Int> = MutableStateFlow(0).also { total ->
-        viewModelScope.launch {
-            allPhotos.collect { total.value = it.size }
         }
     }
 

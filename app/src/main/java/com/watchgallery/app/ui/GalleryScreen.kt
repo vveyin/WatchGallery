@@ -54,6 +54,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
@@ -61,6 +62,7 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.rememberAsyncImagePainter
+import com.watchgallery.app.data.FolderEntry
 import com.watchgallery.app.data.Photo
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
@@ -106,6 +108,10 @@ fun GalleryScreen(
     val showPhotoNames by viewModel.showPhotoNames.collectAsState()
     val selectionMode by viewModel.selectionMode.collectAsState()
     val selectedUris by viewModel.selectedUris.collectAsState()
+    val viewMode by viewModel.viewMode.collectAsState()
+    val folders by viewModel.folders.collectAsState()
+    val openFolder by viewModel.openFolder.collectAsState()
+    val folderPhotos by viewModel.folderPhotos.collectAsState()
 
     var permissionGranted by remember { mutableStateOf(hasMediaPermission(context)) }
     var needSettings by remember { mutableStateOf(false) }
@@ -188,27 +194,78 @@ fun GalleryScreen(
                 onImport = { launchImport() },
                 onOpenSettings = onOpenSettings
             )
-            else -> ScalingPhotoList(
-                items = photos,
-                columns = gridColumns,
-                crownEvents = crownEvents,
-                showNames = showPhotoNames,
-                hasMore = visibleCount < totalCount,
-                totalCount = totalCount,
-                selectionMode = selectionMode,
-                selectedUris = selectedUris,
-                onLoadMore = { viewModel.loadMore() },
-                onPhotoClick = onPhotoClick,
-                onOpenPhoto = { uri ->
-                    photos.firstOrNull { it.uri.toString() == uri }?.let(onPhotoClick)
-                },
-                onLongPress = { viewModel.enterSelectionMode(it) },
-                onToggle = { viewModel.toggleSelected(it) },
-                onSelectRange = { viewModel.addSelected(it) },
-                onDeselectRange = { viewModel.removeSelected(it) },
-                onCancelSelection = { viewModel.exitSelectionMode() },
-                onDeleteSelected = { viewModel.deleteSelected() }
-            )
+            else -> when {
+                // ── 文件夹视图：进了某个文件夹 ──
+                viewMode == GalleryViewMode.FOLDER && openFolder != null -> SwipeBackContainer(
+                    onBack = { viewModel.closeFolder() },
+                    backContent = {
+                        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                            FolderList(
+                                folders = folders,
+                                crownEvents = emptyFlow(),
+                                onOpen = { viewModel.openFolder(it.path) }
+                            )
+                        }
+                    },
+                    content = {
+                        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+                            if (folderPhotos.isEmpty()) {
+                                FolderHint("这个文件夹里已经没有照片了")
+                            } else {
+                                ScalingPhotoList(
+                                    items = folderPhotos,
+                                    columns = gridColumns,
+                                    crownEvents = crownEvents,
+                                    showNames = showPhotoNames,
+                                    hasMore = false,
+                                    totalCount = folderPhotos.size,
+                                    selectionMode = selectionMode,
+                                    selectedUris = selectedUris,
+                                    onLoadMore = {},
+                                    onPhotoClick = onPhotoClick,
+                                    onOpenPhoto = { uri ->
+                                        folderPhotos.firstOrNull { it.uri.toString() == uri }?.let(onPhotoClick)
+                                    },
+                                    onLongPress = { viewModel.enterSelectionMode(it) },
+                                    onToggle = { viewModel.toggleSelected(it) },
+                                    onSelectRange = { viewModel.addSelected(it) },
+                                    onDeselectRange = { viewModel.removeSelected(it) },
+                                    onCancelSelection = { viewModel.exitSelectionMode() },
+                                    onDeleteSelected = { viewModel.deleteSelected() }
+                                )
+                            }
+                        }
+                    }
+                )
+                // ── 文件夹视图：文件夹列表 ──
+                viewMode == GalleryViewMode.FOLDER -> FolderList(
+                    folders = folders,
+                    crownEvents = crownEvents,
+                    onOpen = { viewModel.openFolder(it.path) }
+                )
+                // ── 平铺列表 ──
+                else -> ScalingPhotoList(
+                    items = photos,
+                    columns = gridColumns,
+                    crownEvents = crownEvents,
+                    showNames = showPhotoNames,
+                    hasMore = visibleCount < totalCount,
+                    totalCount = totalCount,
+                    selectionMode = selectionMode,
+                    selectedUris = selectedUris,
+                    onLoadMore = { viewModel.loadMore() },
+                    onPhotoClick = onPhotoClick,
+                    onOpenPhoto = { uri ->
+                        photos.firstOrNull { it.uri.toString() == uri }?.let(onPhotoClick)
+                    },
+                    onLongPress = { viewModel.enterSelectionMode(it) },
+                    onToggle = { viewModel.toggleSelected(it) },
+                    onSelectRange = { viewModel.addSelected(it) },
+                    onDeselectRange = { viewModel.removeSelected(it) },
+                    onCancelSelection = { viewModel.exitSelectionMode() },
+                    onDeleteSelected = { viewModel.deleteSelected() }
+                )
+            }
         }
 
         // 多选模式：底部操作栏（覆盖在网格之上）
@@ -709,6 +766,116 @@ private fun SelectionBar(
                 modifier = Modifier.size(19.dp)
             )
         }
+    }
+}
+
+/** 文件夹列表：一条 = 一个「直接含有图片」的文件夹，点子目录会作为独立条目并列显示 */
+@Composable
+private fun FolderList(
+    folders: List<FolderEntry>,
+    crownEvents: Flow<Float>,
+    onOpen: (FolderEntry) -> Unit
+) {
+    if (folders.isEmpty()) {
+        FolderHint("没有可显示的文件夹\n可能都在设置里被隐藏了")
+        return
+    }
+    ScalingScrollColumn(crownEvents = crownEvents) {
+        item(key = "folder_header") {
+            Box(
+                Modifier.fillMaxWidth().height(28.dp).scalingItem("folder_header", scale = false),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    "文件夹 · ${folders.size}",
+                    style = MaterialTheme.typography.titleSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        folders.forEach { folder ->
+            item(key = "folder_${folder.path}") {
+                FolderRow(folder, onOpen)
+            }
+        }
+    }
+}
+
+@Composable
+private fun FolderRow(folder: FolderEntry, onOpen: (FolderEntry) -> Unit) {
+    val itemKey = "folder_${folder.path}"
+    Surface(
+        onClick = { onOpen(folder) },
+        modifier = Modifier.fillMaxWidth().height(56.dp).scalingItem(itemKey),
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant
+    ) {
+        Row(
+            Modifier.fillMaxSize().padding(horizontal = 7.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier.size(42.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.surface),
+                contentAlignment = Alignment.Center
+            ) {
+                val cover = folder.cover
+                if (cover != null) {
+                    Image(
+                        painter = rememberAsyncImagePainter(cover.uri),
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Icon(
+                        Icons.Filled.Folder, null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+            Spacer(Modifier.width(8.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    folder.name,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    // 父级路径做副标题：拆出来的子目录与父目录并列时，能看出它原来在哪
+                    if (folder.parentPath.isBlank()) "${folder.count} 张" else "${folder.count} 张 · ${folder.parentPath}",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Icon(
+                Icons.Filled.ChevronRight, null,
+                modifier = Modifier.size(15.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+    }
+}
+
+@Composable
+private fun FolderHint(text: String) {
+    Box(
+        Modifier.fillMaxSize().padding(horizontal = 30.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text,
+            fontSize = 11.sp,
+            lineHeight = 15.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
     }
 }
 

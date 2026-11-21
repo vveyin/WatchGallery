@@ -29,9 +29,65 @@ data class Photo(
     val height: Int,
     val bucketName: String,
     val mimeType: String,
-    val size: Long
+    val size: Long,
+    /**
+     * 所在文件夹的规范化路径：相对存储根、无首尾斜杠，如 `Pictures/Watch`。
+     * 存储根目录下的照片为空串；应用内导入的照片为 [IMPORTED_FOLDER]。
+     */
+    val folderPath: String = ""
 ) {
     val isLandscape: Boolean get() = width > height
+
+    /** 文件夹显示名（路径最后一段） */
+    val folderName: String
+        get() = folderPath.substringAfterLast('/').ifBlank { "根目录" }
+
+    companion object {
+        const val IMPORTED_FOLDER = "已导入"
+    }
+}
+
+/**
+ * 一个「自己直接含有图片」的文件夹（文件夹视图里的一条）。
+ *
+ * 只有直接含图片的文件夹才会成为条目：中间层目录（自己没图片、只有子目录）会被压掉，
+ * 子目录因此自然「拆出来」和父目录并列显示，符合「父目录里既有图片又有子目录时只显示图片」。
+ */
+data class FolderEntry(
+    val path: String,
+    val name: String,
+    val parentPath: String,
+    val photos: List<Photo>
+) {
+    val count: Int get() = photos.size
+    val cover: Photo? get() = photos.firstOrNull()
+}
+
+/** 把照片按文件夹分组，只保留「直接有图片」的文件夹 */
+fun buildFolders(photos: List<Photo>): List<FolderEntry> =
+    photos.groupBy { it.folderPath }
+        .map { (path, list) ->
+            val segs = path.split('/').filter { it.isNotBlank() }
+            FolderEntry(
+                path = path,
+                name = segs.lastOrNull() ?: "根目录",
+                parentPath = segs.dropLast(1).joinToString("/"),
+                photos = list
+            )
+        }
+        .sortedWith(compareByDescending<FolderEntry> { it.count }.thenBy { it.path })
+
+/** 该文件夹（含所有子目录）是否被隐藏 */
+fun isFolderHidden(path: String, hidden: Set<String>): Boolean {
+    if (hidden.isEmpty()) return false
+    var p = path
+    while (true) {
+        if (p in hidden) return true
+        val i = p.lastIndexOf('/')
+        if (i < 0) break
+        p = p.substring(0, i)
+    }
+    return "" in hidden
 }
 
 /** 相册分组 */
@@ -160,6 +216,37 @@ class MediaRepository(private val context: Context) {
         return ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
     }
 
+    /**
+     * 把 RELATIVE_PATH / 绝对路径规范成「相对存储根、无首尾斜杠」的文件夹路径。
+     * 例：`/storage/emulated/0/Pictures/Watch/` → `Pictures/Watch`；
+     *     `/storage/1A2B-3C4D/DCIM/Camera/IMG_1.jpg`（调用方已去掉文件名）→ `DCIM/Camera`。
+     */
+    private fun normalizeFolder(raw: String?): String {
+        if (raw.isNullOrBlank()) return ""
+        val segs = raw.replace('\\', '/').split('/').filter { it.isNotBlank() }
+        if (segs.isEmpty()) return ""
+        var i = 0
+        when (segs[0]) {
+            "storage" -> {
+                i = 1
+                i += if (segs.getOrNull(i) == "emulated") 2 else 1
+            }
+            "sdcard" -> i = 1
+            "mnt" -> {
+                i = 1
+                i += if (segs.getOrNull(i) == "media_rw") 2 else 1
+            }
+        }
+        return segs.drop(i.coerceAtMost(segs.size)).joinToString("/")
+    }
+
+    /** 从 MediaStore 的 RELATIVE_PATH / DATA 推出文件夹路径 */
+    private fun folderOf(relative: String?, dataPath: String?, fallback: String): String = when {
+        !relative.isNullOrBlank() -> normalizeFolder(relative)
+        !dataPath.isNullOrBlank() -> normalizeFolder(dataPath.substringBeforeLast('/', ""))
+        else -> normalizeFolder(fallback)
+    }
+
     // ---------------------------------------------------------------- MediaStore
 
     private fun imageCollections(): List<Uri> {
@@ -192,7 +279,10 @@ class MediaRepository(private val context: Context) {
             MediaStore.Images.Media.HEIGHT,
             MediaStore.Images.Media.BUCKET_DISPLAY_NAME,
             MediaStore.Images.Media.MIME_TYPE,
-            MediaStore.Images.Media.SIZE
+            MediaStore.Images.Media.SIZE,
+            // 文件夹树需要真实目录（桶名只有最后一段，做不出层级）
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            MediaStore.MediaColumns.DATA
         )
         val out = mutableListOf<Photo>()
         val seen = HashSet<String>()
@@ -210,6 +300,8 @@ class MediaRepository(private val context: Context) {
                     val bucketCol = cursor.getColumnIndex(MediaStore.Images.Media.BUCKET_DISPLAY_NAME)
                     val mimeCol = cursor.getColumnIndex(MediaStore.Images.Media.MIME_TYPE)
                     val sizeCol = cursor.getColumnIndex(MediaStore.Images.Media.SIZE)
+                    val relCol = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                    val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
 
                     while (cursor.moveToNext()) {
                         val id = cursor.getLong(idCol)
@@ -217,6 +309,7 @@ class MediaRepository(private val context: Context) {
                         if (!seen.add(uri.toString())) continue
                         var date = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
                         if (date == 0L && modCol >= 0) date = cursor.getLong(modCol)
+                        val bucket = if (bucketCol >= 0) cursor.getString(bucketCol) ?: "其他" else "其他"
                         out.add(
                             Photo(
                                 id = id,
@@ -225,9 +318,14 @@ class MediaRepository(private val context: Context) {
                                 dateAdded = date,
                                 width = if (wCol >= 0) cursor.getInt(wCol) else 0,
                                 height = if (hCol >= 0) cursor.getInt(hCol) else 0,
-                                bucketName = if (bucketCol >= 0) cursor.getString(bucketCol) ?: "其他" else "其他",
+                                bucketName = bucket,
                                 mimeType = if (mimeCol >= 0) cursor.getString(mimeCol) ?: "image/jpeg" else "image/jpeg",
-                                size = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
+                                size = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L,
+                                folderPath = folderOf(
+                                    if (relCol >= 0) cursor.getString(relCol) else null,
+                                    if (dataCol >= 0) cursor.getString(dataCol) else null,
+                                    bucket
+                                )
                             )
                         )
                     }
@@ -251,7 +349,9 @@ class MediaRepository(private val context: Context) {
             MediaStore.Files.FileColumns.DATE_ADDED,
             MediaStore.Files.FileColumns.DATE_MODIFIED,
             MediaStore.Files.FileColumns.MIME_TYPE,
-            MediaStore.Files.FileColumns.SIZE
+            MediaStore.Files.FileColumns.SIZE,
+            MediaStore.MediaColumns.RELATIVE_PATH,
+            MediaStore.MediaColumns.DATA
         )
         val out = mutableListOf<Photo>()
         try {
@@ -265,6 +365,8 @@ class MediaRepository(private val context: Context) {
                 val modCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.DATE_MODIFIED)
                 val mimeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.MIME_TYPE)
                 val sizeCol = cursor.getColumnIndex(MediaStore.Files.FileColumns.SIZE)
+                val relCol = cursor.getColumnIndex(MediaStore.MediaColumns.RELATIVE_PATH)
+                val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idCol)
                     var date = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
@@ -279,7 +381,12 @@ class MediaRepository(private val context: Context) {
                             height = 0,
                             bucketName = "其他",
                             mimeType = if (mimeCol >= 0) cursor.getString(mimeCol) ?: "image/*" else "image/*",
-                            size = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
+                            size = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L,
+                            folderPath = folderOf(
+                                if (relCol >= 0) cursor.getString(relCol) else null,
+                                if (dataCol >= 0) cursor.getString(dataCol) else null,
+                                ""
+                            )
                         )
                     )
                 }
@@ -379,7 +486,8 @@ class MediaRepository(private val context: Context) {
                             height = 0,
                             bucketName = f.parentFile?.name ?: "其他",
                             mimeType = "image/*",
-                            size = f.length()
+                            size = f.length(),
+                            folderPath = normalizeFolder(f.absolutePath.substringBeforeLast('/', ""))
                         )
                     )
                 }
@@ -404,7 +512,8 @@ class MediaRepository(private val context: Context) {
                     height = 0,
                     bucketName = "已导入",
                     mimeType = "image/*",
-                    size = it.length()
+                    size = it.length(),
+                    folderPath = Photo.IMPORTED_FOLDER
                 )
             }
     }

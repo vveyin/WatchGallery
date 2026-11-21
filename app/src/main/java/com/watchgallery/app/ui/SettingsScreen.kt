@@ -54,6 +54,7 @@ fun SettingsScreen(
                 onOpenCrown = { subPage = SubPage.Crown },
                 onOpenTheme = { subPage = SubPage.Theme },
                 onOpenDiag = { subPage = SubPage.Diag },
+                onOpenHidden = { subPage = SubPage.Hidden },
                 onCheckUpdate = onCheckUpdate
             )
             else -> SwipeBackContainer(
@@ -66,6 +67,7 @@ fun SettingsScreen(
                             onOpenCrown = {},
                             onOpenTheme = {},
                             onOpenDiag = {},
+                            onOpenHidden = {},
                             onCheckUpdate = {}
                         )
                     }
@@ -80,6 +82,7 @@ fun SettingsScreen(
                             )
                             SubPage.Theme -> ThemeSettings(viewModel = viewModel, crownEvents = crownEvents)
                             SubPage.Diag -> ScanDiagSettings(viewModel = viewModel, crownEvents = crownEvents)
+                            SubPage.Hidden -> HiddenFoldersSettings(viewModel = viewModel, crownEvents = crownEvents)
                             SubPage.Main -> {}
                         }
                     }
@@ -94,6 +97,7 @@ private sealed class SubPage {
     data object Crown : SubPage()
     data object Theme : SubPage()
     data object Diag : SubPage()
+    data object Hidden : SubPage()
 }
 
 /** 设置主页 */
@@ -104,6 +108,7 @@ private fun SettingsMain(
     onOpenCrown: () -> Unit,
     onOpenTheme: () -> Unit,
     onOpenDiag: () -> Unit,
+    onOpenHidden: () -> Unit,
     onCheckUpdate: () -> Unit
 ) {
     val themeMode by viewModel.themeMode.collectAsState()
@@ -111,6 +116,8 @@ private fun SettingsMain(
     val crownSpeed by viewModel.crownSpeed.collectAsState()
     val gridColumns by viewModel.gridColumns.collectAsState()
     val showPhotoNames by viewModel.showPhotoNames.collectAsState()
+    val viewMode by viewModel.viewMode.collectAsState()
+    val hiddenFolders by viewModel.hiddenFolders.collectAsState()
     val report by viewModel.scanReport.collectAsState()
     val context = LocalContext.current
 
@@ -133,6 +140,26 @@ private fun SettingsMain(
                 subtitle = "${crownMode.label} · ${formatSpeed(crownSpeed)}x",
                 onClick = onOpenCrown,
                 itemKey = "row_crown"
+            )
+        }
+        item(key = "row_mode") {
+            SettingButton(
+                icon = if (viewMode == GalleryViewMode.FOLDER) Icons.Filled.Folder else Icons.Filled.GridView,
+                title = "浏览方式",
+                subtitle = if (viewMode == GalleryViewMode.FOLDER) "文件夹 · 点击切回平铺列表"
+                else "平铺列表 · 点击切到文件夹",
+                onClick = { viewModel.toggleViewMode(); viewModel.closeFolder() },
+                itemKey = "row_mode"
+            )
+        }
+        item(key = "row_hidden") {
+            SettingButton(
+                icon = Icons.Filled.VisibilityOff,
+                title = "隐藏文件夹",
+                subtitle = if (hiddenFolders.isEmpty()) "未隐藏 · 点击选择要隐藏的文件夹"
+                else "已隐藏 ${hiddenFolders.size} 个文件夹",
+                onClick = onOpenHidden,
+                itemKey = "row_hidden"
             )
         }
         item(key = "row_grid") {
@@ -437,6 +464,95 @@ private fun OptionButton(
     }
 }
 
+/**
+ * 隐藏文件夹子页：列出所有「已识别到有图片」的文件夹，点一行切换隐藏。
+ * 隐藏后该文件夹（含子文件夹）的照片在平铺和文件夹两种视图里都不显示。
+ */
+@Composable
+private fun HiddenFoldersSettings(
+    viewModel: GalleryViewModel,
+    crownEvents: Flow<Float>
+) {
+    val folders by viewModel.allFolders.collectAsState()
+    val hidden by viewModel.hiddenFolders.collectAsState()
+
+    ScalingScrollColumn(crownEvents = crownEvents) {
+        item(key = "hidden_title") {
+            Box(Modifier.fillMaxWidth().height(28.dp).scalingItem("hidden_title", scale = false),
+                contentAlignment = Alignment.Center) {
+                Text("隐藏文件夹", style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+        item(key = "hidden_desc") {
+            Box(Modifier.fillMaxWidth().scalingItem("hidden_desc", scale = false)) {
+                Text(
+                    "选中后该文件夹的照片在平铺列表和文件夹视图里都不显示，子文件夹一起隐藏。再点一次恢复。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+        if (folders.isEmpty()) {
+            item(key = "hidden_empty") {
+                Box(Modifier.fillMaxWidth().scalingItem("hidden_empty", scale = false)) {
+                    Text("还没有识别到文件夹", style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth())
+                }
+            }
+        }
+        folders.forEach { folder ->
+            item(key = "hidden_${folder.path}") {
+                val selfHidden = folder.path in hidden
+                val inherited = !selfHidden && com.watchgallery.app.data.isFolderHidden(folder.path, hidden)
+                val mk = "hidden_${folder.path}"
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    val isHidden = selfHidden || inherited
+                    Button(
+                        onClick = { if (!inherited) viewModel.toggleFolderHidden(folder.path) },
+                        modifier = Modifier.fillMaxWidth().height(48.dp).scalingItem(mk),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = if (isHidden) MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurface
+                        ),
+                        border = if (isHidden) BorderStroke(1.5.dp, MaterialTheme.colorScheme.error) else null,
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)
+                    ) {
+                        Icon(
+                            if (isHidden) Icons.Filled.VisibilityOff else Icons.Filled.Folder,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(Modifier.width(7.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(folder.name, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+                            Text(
+                                buildString {
+                                    append("${folder.count} 张")
+                                    if (folder.parentPath.isNotBlank()) append(" · ${folder.parentPath}")
+                                    if (inherited) append(" · 随上级隐藏")
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1
+                            )
+                        }
+                        Icon(
+                            if (isHidden) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                            contentDescription = null,
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
 /** 扫描诊断子页（缩放列表） */
 @Composable
 private fun ScanDiagSettings(
@@ -444,7 +560,7 @@ private fun ScanDiagSettings(
     crownEvents: Flow<Float>
 ) {
     val report by viewModel.scanReport.collectAsState()
-    val photos by viewModel.photos.collectAsState()
+    val photos by viewModel.allPhotosFlow.collectAsState()
 
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "diag_title") {

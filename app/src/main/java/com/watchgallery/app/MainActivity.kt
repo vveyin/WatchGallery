@@ -246,7 +246,8 @@ private fun AppNavigation(
     // 设置不再是栈中一页，而是常驻抽屉（SettingsDrawer），盖在主界面之上，用垂直手势升降。
     val backStack = remember { mutableStateListOf<Screen>(Screen.Gallery) }
     var currentPhoto by remember { mutableStateOf<Photo?>(null) }
-    val photos by viewModel.allPhotosFlow.collectAsState()
+    // 大图翻页用「当前上下文」的列表：在文件夹里打开就翻该文件夹，否则翻全部
+    val photos by viewModel.viewerPhotos.collectAsState()
     val selectionMode by viewModel.selectionMode.collectAsState()
 
     val context = LocalContext.current
