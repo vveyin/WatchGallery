@@ -198,6 +198,27 @@ fun PhotoViewerScreen(
         )
     }
 
+    /**
+     * 以**屏幕中心当前对应的那个图片像素**为锚点缩放。
+     *
+     * 屏幕上的点 = 屏幕中心 + (图片坐标 − 图片中心) × scale + offset。
+     * 要让屏幕中心对应的图片点保持不动，scale 变成 k 倍时 offset 必须同比例变成 k 倍；
+     * 只改 scale 不动 offset，放大后屏幕中心看到的就是图片上的另一个位置了 ——
+     * 平移过之后再放大就会「飘走」，看着像是以图片自己的中心在放大。
+     */
+    fun setScale(target: Float) {
+        val s = target.coerceIn(1f, zoomCap())
+        if (s == scale) return
+        if (s <= 1.0001f) {
+            scale = 1f
+            offset = Offset.Zero
+            return
+        }
+        offset *= s / scale
+        scale = s
+        reclampOffset()
+    }
+
     // ── 抽屉：0 = 收起，1 = 铺满（三处抽屉统一用 DrawerState）──
     val drawer = rememberDrawerState(false)
     DrawerSettle(drawer)
@@ -266,9 +287,7 @@ fun PhotoViewerScreen(
     LaunchedEffect(crownEvents) {
         crownEvents.collect { delta ->
             if (showDetail || renameTarget != null) return@collect
-            val s = (scale + delta * 0.01f).coerceIn(1f, zoomCap())
-            scale = s
-            reclampOffset()
+            setScale(scale + delta * 0.01f)
         }
     }
 
@@ -514,9 +533,7 @@ fun PhotoViewerScreen(
 
                                     if (zoom != 1f) {
                                         everZoomed = true
-                                        val s = (scale * zoom).coerceIn(1f, zoomCap())
-                                        scale = s
-                                        if (s <= 1.0001f) offset = Offset.Zero
+                                        setScale(scale * zoom)
                                     }
 
                                     if (scale > 1f) {
@@ -566,19 +583,13 @@ fun PhotoViewerScreen(
                         horizontalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
                         IconButton(
-                            onClick = {
-                                scale = (scale + 0.3f).coerceAtMost(zoomCap())
-                                reclampOffset()
-                            },
+                            onClick = { setScale(scale + 0.3f) },
                             modifier = Modifier.size(34.dp)
                         ) {
                             Icon(Icons.Filled.ZoomIn, "放大", tint = Color.White, modifier = Modifier.size(18.dp))
                         }
                         IconButton(
-                            onClick = {
-                                scale = (scale - 0.3f).coerceAtLeast(1f)
-                                reclampOffset()
-                            },
+                            onClick = { setScale(scale - 0.3f) },
                             modifier = Modifier.size(34.dp)
                         ) {
                             Icon(Icons.Filled.ZoomOut, "缩小", tint = Color.White, modifier = Modifier.size(18.dp))

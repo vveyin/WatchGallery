@@ -210,19 +210,6 @@ fun EditScreen(
     DrawerSettle(drawer)
     val drawerOpen by remember { derivedStateOf { drawer.progress.floatValue > 0.5f } }
 
-    // 表冠缩放：抽屉收起时才作用在图片上（抽屉展开时表冠留给面板，避免和按钮抢手感）
-    LaunchedEffect(crownEvents) {
-        crownEvents.collect { delta ->
-            if (drawer.progress.floatValue > 0.002f) return@collect
-            val z = (zoom + delta * 0.01f).coerceIn(1f, maxZoom)
-            zoom = z
-            if (z <= 1.0001f) {
-                zoom = 1f
-                pan = Offset.Zero
-            }
-        }
-    }
-
     // 抽屉背景 = 「屏幕等价图」的模糊版：黑底 + 图片按它在屏幕上真实的矩形画进去，再整体模糊。
     var bgImage by remember { mutableStateOf<androidx.compose.ui.graphics.ImageBitmap?>(null) }
 
@@ -354,6 +341,34 @@ fun EditScreen(
                     return Offset(p.x.coerceIn(-mx, mx), p.y.coerceIn(-my, my))
                 }
 
+                /**
+                 * 以**屏幕中心当前对应的那个图片像素**为锚点缩放。
+                 *
+                 * 屏幕上的点 = 视图中心 + (图片坐标 − 图片中心) × zoom + pan；
+                 * 要让屏幕中心对应的图片点不动，zoom 变成 k 倍时 pan 也要同比例变成 k 倍。
+                 * 只改 zoom 不动 pan 的话，平移过之后再放大，屏幕中心看到的就是图片上另一个位置。
+                 */
+                fun setZoom(target: Float) {
+                    val z = target.coerceIn(1f, maxZoom)
+                    if (z == zoom) return
+                    if (z <= 1.0001f) {
+                        zoom = 1f
+                        pan = Offset.Zero
+                        return
+                    }
+                    pan *= z / zoom
+                    zoom = z
+                    pan = clampPan(pan)
+                }
+
+                // 表冠缩放：抽屉收起时才作用在图片上（抽屉展开时表冠留给面板，避免和按钮抢手感）
+                LaunchedEffect(crownEvents) {
+                    crownEvents.collect { delta ->
+                        if (drawer.progress.floatValue > 0.002f) return@collect
+                        setZoom(zoom + delta * 0.01f)
+                    }
+                }
+
                 // 屏幕坐标 → 原图像素：先扣掉平移、除以缩放，再除以「原图→控件」比例
                 fun toBitmap(p: Offset): Offset {
                     val local = Offset(
@@ -464,9 +479,7 @@ fun EditScreen(
                                         }
                                         pinch = true
                                         val z = e.calculateZoom()
-                                        if (z != 1f) {
-                                            zoom = (zoom * z).coerceIn(1f, maxZoom)
-                                        }
+                                        if (z != 1f) setZoom(zoom * z)
                                         val p = e.calculatePan()
                                         if (zoom <= 1.001f) {
                                             zoom = 1f
@@ -620,19 +633,13 @@ fun EditScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         IconButton(
-                            onClick = { zoom = (zoom + 0.3f).coerceAtMost(maxZoom) },
+                            onClick = { setZoom(zoom + 0.3f) },
                             modifier = Modifier.size(34.dp)
                         ) {
                             Icon(Icons.Filled.ZoomIn, "放大", tint = Color.White, modifier = Modifier.size(18.dp))
                         }
                         IconButton(
-                            onClick = {
-                                zoom = (zoom - 0.3f).coerceAtLeast(1f)
-                                if (zoom <= 1.001f) {
-                                    zoom = 1f
-                                    pan = Offset.Zero
-                                }
-                            },
+                            onClick = { setZoom(zoom - 0.3f) },
                             modifier = Modifier.size(34.dp)
                         ) {
                             Icon(Icons.Filled.ZoomOut, "缩小", tint = Color.White, modifier = Modifier.size(18.dp))
