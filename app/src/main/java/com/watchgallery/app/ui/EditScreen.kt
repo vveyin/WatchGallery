@@ -233,9 +233,9 @@ fun EditScreen(
     val window = remember(view) { view.context.findHostActivity()?.window }
     LaunchedEffect(Unit) {
         if (blurEnabled && window != null) {
-            BlurBackdrop.setCovered(false)
+            BlurBackdrop.setCovered(false, BlurBackdrop.Channel.VIEWER)
             delay(700)
-            BlurBackdrop.capture(window)
+            BlurBackdrop.capture(window, BlurBackdrop.Channel.VIEWER)
         }
     }
 

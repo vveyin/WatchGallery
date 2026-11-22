@@ -239,23 +239,23 @@ fun PhotoViewerScreen(
     val drawerVisible by remember { derivedStateOf { drawer.progress.floatValue > 0.002f } }
     LaunchedEffect(drawerVisible) {
         if (drawerVisible) {
-            BlurBackdrop.setCovered(true)
+            BlurBackdrop.setCovered(true, BlurBackdrop.Channel.VIEWER)
         } else {
-            BlurBackdrop.setCovered(false)
-            if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 80)
+            BlurBackdrop.setCovered(false, BlurBackdrop.Channel.VIEWER)
+            if (blurEnabled && window != null) BlurBackdrop.refreshSoon(window, 80, BlurBackdrop.Channel.VIEWER)
         }
     }
 
-    // 进页面时抽屉是收起的：等大图解码并画出来，拍一张干净的底图
+    // 进页面时抽屉是收起的：等大图解码并画出来，拍一张干净的底图（只喂 viewer 通道，不碰相册背景）
     LaunchedEffect(Unit) {
         if (blurEnabled && window != null) {
-            BlurBackdrop.setCovered(false)
+            BlurBackdrop.setCovered(false, BlurBackdrop.Channel.VIEWER)
             delay(700)
-            BlurBackdrop.capture(window)
+            BlurBackdrop.capture(window, BlurBackdrop.Channel.VIEWER)
         }
     }
     DisposableEffect(Unit) {
-        onDispose { BlurBackdrop.setCovered(false) }
+        onDispose { BlurBackdrop.setCovered(false, BlurBackdrop.Channel.VIEWER) }
     }
 
     fun resetZoom() {
@@ -342,7 +342,7 @@ fun PhotoViewerScreen(
                 offset = Offset.Zero
                 // 换了张图，抽屉背景也得跟着换 —— 只在抽屉收起时拍，才不含面板
                 if (!drawerVisible && blurEnabled && window != null) {
-                    BlurBackdrop.refreshSoon(window, 360)
+                    BlurBackdrop.refreshSoon(window, 360, BlurBackdrop.Channel.VIEWER)
                 }
             }
             animJob?.cancel()
@@ -615,8 +615,8 @@ fun PhotoViewerScreen(
                     .pointerInput(Unit) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
-                            // 按下就抓一帧：抽屉还在屏幕外，拍到的是干净的大图
-                            if (blurEnabled && window != null) BlurBackdrop.capture(window)
+                            // 按下就抓一帧：抽屉还在屏幕外，拍到的是干净的大图（viewer 通道独立）
+                            if (blurEnabled && window != null) BlurBackdrop.capture(window, BlurBackdrop.Channel.VIEWER)
                             awaitDrawerDrag(
                                 state = drawer,
                                 down = down,
@@ -642,7 +642,8 @@ fun PhotoViewerScreen(
                 BlurBand(
                     heightPx = { (drawer.progress.floatValue * screenH).coerceIn(0f, screenH) },
                     dim = 0.20f,
-                    cornerRadiusPx = with(density) { 18.dp.toPx() }
+                    cornerRadiusPx = with(density) { 18.dp.toPx() },
+                    channel = BlurBackdrop.Channel.VIEWER
                 )
             }
 
