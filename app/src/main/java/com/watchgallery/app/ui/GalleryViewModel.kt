@@ -15,6 +15,7 @@ import com.watchgallery.app.data.FolderEntry
 import com.watchgallery.app.data.MediaRepository
 import com.watchgallery.app.data.Photo
 import com.watchgallery.app.data.ScreenShape
+import com.watchgallery.app.data.TrashRepository
 import com.watchgallery.app.data.buildFolders
 import com.watchgallery.app.data.isFolderHidden
 import com.watchgallery.app.edit.EditAdjustments
@@ -40,6 +41,7 @@ enum class GalleryViewMode { FLAT, FOLDER }
 class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = MediaRepository(app)
+    private val trashRepo = TrashRepository(app)
     private val prefs = app.getSharedPreferences("watch_gallery", Context.MODE_PRIVATE)
 
     /** 完整扫描结果（未过滤），大图翻页与文件夹树都从这里派生 */
@@ -313,6 +315,60 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         if (next.size != cur.size) _selectedUris.value = next
     }
 
+    // ── 最近删除（回收站）──
+
+    private val _trashPhotos = MutableStateFlow<List<Photo>>(emptyList())
+    val trashPhotos: StateFlow<List<Photo>> = _trashPhotos
+
+    private val _keepDays = MutableStateFlow(trashRepo.loadKeepDays())
+    val keepDays: StateFlow<Long> = _keepDays
+
+    fun setKeepDays(days: Long) {
+        _keepDays.value = days
+        trashRepo.saveKeepDays(days)
+    }
+
+    /** 进入最近删除页时刷新（顺带按保留时长清理过期项） */
+    fun refreshTrash() {
+        viewModelScope.launch {
+            trashRepo.purgeExpired()
+            _trashPhotos.value = trashRepo.listPhotos()
+        }
+    }
+
+    fun restoreTrash(photo: Photo) {
+        viewModelScope.launch {
+            val ok = trashRepo.restore(photo)
+            _message.value = if (ok) "已恢复到原目录" else "恢复失败"
+            if (ok) {
+                refreshTrash()
+                refresh()
+            }
+        }
+    }
+
+    /** 批量恢复：单次串行处理 + 一次刷新，避免多协程并发覆盖导致底部几张恢复不掉 */
+    fun restoreTrashBatch(photos: List<Photo>) {
+        if (photos.isEmpty()) return
+        viewModelScope.launch {
+            val n = trashRepo.restoreBatch(photos)
+            _message.value = if (n > 0) "已恢复 $n 张到原目录" else "恢复失败"
+            if (n > 0) {
+                refreshTrash()
+                refresh()
+            }
+        }
+    }
+
+    fun deleteTrashForever(photos: List<Photo>) {
+        if (photos.isEmpty()) return
+        viewModelScope.launch {
+            val n = trashRepo.deleteForever(photos)
+            _message.value = "已彻底删除 $n 张"
+            refreshTrash()
+        }
+    }
+
     // ── 删除（走系统确认弹窗）──
 
     /**
@@ -331,6 +387,9 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     /** 本次待删的全部照片（拉不起系统弹窗时兜底直接删） */
     private var pendingAll: List<Photo> = emptyList()
+
+    /** 本次删除已写进回收站的备份文件名（用户取消系统弹窗时据此回滚） */
+    private var pendingTrashNames: List<String> = emptyList()
 
     /** 本次待删总数（用于提示文案） */
     private var pendingCount: Int = 0
@@ -353,16 +412,29 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         }
         pendingCount = targets.size
         pendingAll = targets
-        val plan = repo.buildDeletePlan(targets)
-        pendingPrivate = plan.privatePhotos
 
-        val sender = repo.createSystemDeleteRequest(plan.mediaUris)
-        if (sender != null) {
-            _deleteRequest.value = SystemDeleteRequest(sender, ++deleteRequestId)
-        } else {
-            // 旧系统没有系统删除弹窗：直接删（含 MediaStore 与私有文件）
-            pendingPrivate = emptyList()
-            doDelete(targets)
+        viewModelScope.launch {
+            // 删除前先把原图备份进回收站；备份失败则整个删除作废，避免"删了找不回"
+            val backup = trashRepo.backup(targets)
+            if (!backup.ok) {
+                _message.value = "备份失败，已取消删除"
+                pendingCount = 0
+                pendingAll = emptyList()
+                exitSelectionMode()
+                return@launch
+            }
+            pendingTrashNames = backup.names
+
+            val plan = repo.buildDeletePlan(targets)
+            pendingPrivate = plan.privatePhotos
+            val sender = repo.createSystemDeleteRequest(plan.mediaUris)
+            if (sender != null) {
+                _deleteRequest.value = SystemDeleteRequest(sender, ++deleteRequestId)
+            } else {
+                // 旧系统没有系统删除弹窗：直接删（含 MediaStore 与私有文件）
+                pendingPrivate = emptyList()
+                doDelete(targets)
+            }
         }
     }
 
@@ -373,17 +445,22 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         val total = pendingCount
         pendingPrivate = emptyList()
         pendingAll = emptyList()
+        val backupNames = pendingTrashNames
+        pendingTrashNames = emptyList()
         pendingCount = 0
         if (!confirmed) {
+            // 用户取消：回滚回收站备份，原图保持不动
+            trashRepo.rollback(backupNames)
             _message.value = "已取消删除"
             return
         }
         viewModelScope.launch {
-            // 系统已经删掉 MediaStore 里的照片，这里只需清理私有文件
+            // 系统已经删掉 MediaStore 里的照片，这里只需清理私有原文件；
+            // 备份留在回收站，随时可恢复。
             val privOk = repo.deletePrivatePhotos(priv)
             _message.value =
-                if (priv.isEmpty() || privOk > 0) "已删除 $total 张照片"
-                else "已删除，部分导入文件清理失败"
+                if (priv.isEmpty() || privOk > 0) "已移入最近删除 $total 张"
+                else "已移入最近删除，部分导入文件清理失败"
             exitSelectionMode()
             refresh()
         }
@@ -403,14 +480,22 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             if (targets.isEmpty()) {
                 _message.value = "无法调起系统删除"
+                trashRepo.rollback(pendingTrashNames)
+                pendingTrashNames = emptyList()
                 pendingCount = 0
                 exitSelectionMode()
                 return@launch
             }
             val ok = repo.deletePhotos(targets)
-            _message.value =
-                if (ok > 0) "已删除 $ok 张照片"
-                else "删除失败（这张照片可能不允许删除）"
+            if (ok > 0) {
+                // 真删成功：备份留在回收站
+                _message.value = "已移入最近删除 $ok 张"
+            } else {
+                // 一张都没删掉：回滚备份，提示失败
+                trashRepo.rollback(pendingTrashNames)
+                _message.value = "删除失败（这张照片可能不允许删除）"
+            }
+            pendingTrashNames = emptyList()
             pendingCount = 0
             exitSelectionMode()
             refresh()

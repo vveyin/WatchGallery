@@ -485,6 +485,12 @@ internal fun ScalingPhotoList(
     val circleRadiusPx = with(density) { 20.dp.toPx() }
     val nearestSlopPx = with(density) { 22.dp.toPx() }
 
+    // 多选覆盖层自身的 root 偏移。cellRects 存的是 positionInRoot()（相对整个应用根），
+    // 而覆盖层 pointerInput 的 down.position 是相对覆盖层 Box 的局部坐标。主相册里覆盖层
+    // 恰好铺满全屏（偏移为 0）所以 v0.61 看着是对的；回收站列表上方有标题栏 + 保留时长行，
+    // 覆盖层原点被顶下去几十像素，局部坐标就比 root 坐标小这一截 —— 表现成「划过下面、
+    // 选中的却是上面那张」。这里把覆盖层原点记下来，统一把局部坐标换算成 root 坐标。
+    val overlayOrigin = remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
     // 手势开始时读取最新的多选状态。不能拿它当 pointerInput 的 key —— 长按进入多选后
     // 状态翻转会让手势协程重启，后续拖动就收不到了。
     val selectionModeState = rememberUpdatedState(selectionMode)
@@ -767,16 +773,21 @@ internal fun ScalingPhotoList(
             Box(
                 Modifier
                     .fillMaxSize()
+                    .onGloballyPositioned { overlayOrigin.value = it.positionInRoot() }
                     .pointerInput(Unit) {
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
                             down.consume()
                             gestureHits.clear()
+                            // 覆盖层局部坐标 → root 坐标：所有命中判定（cellRects）都在 root 空间，
+                            // 必须加上覆盖层原点的偏移，否则回收站里会选中划过区域上面那张。
+                            fun localToRoot(p: Offset): Offset = p + overlayOrigin.value
+                            val downRoot = localToRoot(down.position)
                             // 加选还是取消，由「起点这张照片当前是否已选中」决定（手机相册同款）：
                             // 从已选中的照片起手 → 整个滑动过程都是取消；从未选中的起手 → 加选。
                             // 这样同一个手势既能快速多选，也能快速反选，不用换按钮。
                             val startUri = hitCellOrNearest(
-                                cellRects, down.position, nearestSlopPx,
+                                cellRects, downRoot, nearestSlopPx,
                                 screenHeightPx / 2f, screenWidthPx, centerScale
                             )
                             val deselect = startUri != null && startUri in selectedUrisState.value
@@ -794,6 +805,7 @@ internal fun ScalingPhotoList(
                                         val scale = if (centerScale && visual != null && cell != null) {
                                             visual.width / cell.width.coerceAtLeast(1f)
                                         } else 1f
+                                        // p 是 runSelectionDrag 经 mapPoint 换算后的 root 坐标
                                         // 点在复选圈上才算「选择」，点照片本体是打开大图
                                         if (visual != null && inCheckCircle(
                                                 visual, p, circleInsetPx, circleRadiusPx, scale
@@ -804,7 +816,10 @@ internal fun ScalingPhotoList(
                                             onOpenPhoto(startUri)
                                         }
                                     }
-                                }
+                                },
+                                // 覆盖层的 pointerInput 坐标系相对自身 Box，需换算到 root
+                                // 才能与 cellRects / visualCellRect 对齐。
+                                mapPoint = ::localToRoot
                             )
                         }
                     }

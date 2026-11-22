@@ -76,8 +76,9 @@ fun TrashScreen(
     fun doRestore() {
         val targets = photos.filter { it.uri.toString() in selected }
         if (targets.isEmpty()) return
-        // 逐张恢复到原目录
-        targets.forEach { viewModel.restoreTrash(it) }
+        // 一次性批量恢复：避免逐张启动多个协程并发写 SharedPreferences 互相覆盖，
+        // 那会让底部几张恢复不掉；批量接口也会把每张的原图时间写回，保持相册原顺序。
+        viewModel.restoreTrashBatch(targets)
         exitSelection()
     }
     fun doDelete() {
