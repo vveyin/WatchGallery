@@ -273,6 +273,9 @@ private fun AppNavigation(
     // 出栈计数：浮层移出组合之后再把两个进度归零。若像以前那样在 onBack() 之后
     // 立刻 snapTo(0)，还没来得及移除的浮层会被拉回原位闪一帧原图。
     var popTick by remember { mutableIntStateOf(0) }
+    // 退回回收站的第一帧 swipeOffset 还是满宽，若直接用它算抽屉 cover 会闪出一帧设置菜单；
+    // 等归零后再放开。
+    var suppressDrawerCover by remember { mutableStateOf(false) }
     val navScope = rememberCoroutineScope()
     // 大图翻页用「当前上下文」的列表：在文件夹里打开就翻该文件夹，否则翻全部
     val photos by viewModel.viewerPhotos.collectAsState()
@@ -349,6 +352,7 @@ private fun AppNavigation(
     fun goBack() {
         if (backStack.size > 1) {
             backStack.removeAt(backStack.lastIndex)
+            suppressDrawerCover = backStack.last() is Screen.Trash
             popTick++
         }
     }
@@ -359,6 +363,7 @@ private fun AppNavigation(
         if (popTick > 0) {
             swipeOffset.snapTo(0f)
             enterOffset.snapTo(0f)
+            suppressDrawerCover = false
         }
     }
 
@@ -568,11 +573,18 @@ private fun AppNavigation(
         // 在整个手势过程中都露得出来，而不是返回完成才突然出现。
         //  - 抽屉面板：随浮层进度做「缩小 + 左移 + 淡出」（设置二级菜单同款退开动画）；
         //  - 毛玻璃背板：不受影响，始终铺满，正好当回收站的模糊背景。
-        val drawerIsBack = current is Screen.Trash ||
-            (current !is Screen.Gallery && current !is Screen.Trash && viewerUnder is Screen.Trash)
         val drawerCover: () -> Float = {
-            if (!drawerIsBack) 1f
-            else (maxOf(enterOffset.value, swipeOffset.value) / navWidthPx).coerceIn(0f, 1f)
+            when {
+                // 刚退回回收站的那一帧：还在归零途中，先按住不露，避免闪一帧菜单
+                suppressDrawerCover -> 0f
+                // 当前就在回收站：进入时随浮层退开，右划返回相册时随进度露出（设置同款）
+                current is Screen.Trash ->
+                    (maxOf(enterOffset.value, swipeOffset.value) / navWidthPx).coerceIn(0f, 1f)
+                // 从回收站进看图 / 编辑：底层是回收站自己，设置一级菜单必须全程隐藏。
+                // 否则进出看图时会闪出设置菜单，回到回收站又突然消失。
+                current !is Screen.Gallery && viewerUnder is Screen.Trash -> 0f
+                else -> 1f
+            }
         }
         SettingsDrawer(
             state = settingsDrawer,

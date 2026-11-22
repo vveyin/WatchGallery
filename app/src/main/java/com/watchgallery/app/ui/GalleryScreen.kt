@@ -315,15 +315,23 @@ fun GalleryScreen(
 
 /**
  * 命中照片：先看是否落在某个 cell 矩形内；不在矩形内时取最近的 cell（间隙内也算）。
- * 列表里的照片会按行缩放（中间 1.10 / 边缘 0.78），cellRects 记录的是未缩放的布局矩形，
- * 和实际看到的边界有十几像素差，留 [slop] 的容差可以把这点误差吃掉。
+ *
+ * 关键：cellRects 存的是**未缩放**的布局矩形，而照片实际是按行缩放绘制的
+ * （graphicsLayer 中间 1.10 / 边缘 0.78，围绕「屏幕水平中线 + 本行竖直中心」缩放）。
+ * 命中判定必须走和绘制完全一致的「视觉矩形」，否则会偏移小半格到一格——
+ * 表现就是「点这张的复选圈却选中了上/下一张」。命中检测发生在交互期，
+ * 此时条目浮现动画（0.88→1.0）早已结束，按 1.0 算即可。
  */
-private fun hitCellOrNearest(cellRects: Map<String, Rect>, p: Offset, slop: Float): String? {
+private fun hitCellOrNearest(
+    cellRects: Map<String, Rect>, p: Offset, slop: Float,
+    viewportCenterY: Float, screenWidthPx: Float, centerScale: Boolean
+): String? {
     var best: String? = null
     var bestDist = Float.MAX_VALUE
     for ((uri, r) in cellRects) {
-        val dx = maxOf(r.left - p.x, 0f, p.x - r.right)
-        val dy = maxOf(r.top - p.y, 0f, p.y - r.bottom)
+        val v = visualCellRect(r, viewportCenterY, screenWidthPx, centerScale)
+        val dx = maxOf(v.left - p.x, 0f, p.x - v.right)
+        val dy = maxOf(v.top - p.y, 0f, p.y - v.bottom)
         val d = if (dx == 0f && dy == 0f) 0f else kotlin.math.hypot(dx, dy)
         if (d < bestDist) {
             bestDist = d
@@ -333,11 +341,34 @@ private fun hitCellOrNearest(cellRects: Map<String, Rect>, p: Offset, slop: Floa
     return if (bestDist <= slop) best else null
 }
 
-/** 某张照片右上角的复选圈热区：圈中心距 cell 右上角各 [inset]，半径 [radius]（都按设计稿 dp 传 px） */
-private fun inCheckCircle(cell: Rect, p: Offset, inset: Float, radius: Float): Boolean {
-    val cx = cell.right - inset
-    val cy = cell.top + inset
-    return kotlin.math.hypot(p.x - cx, p.y - cy) <= radius
+/**
+ * 照片 cell 此刻被 graphicsLayer 缩放后的「视觉矩形」，命中检测统一用它。
+ * 缩放公式与绘制处（item 的 graphicsLayer lambda）完全一致，避免两套算法对不上。
+ */
+private fun visualCellRect(
+    cell: Rect, viewportCenterY: Float, screenWidthPx: Float, centerScale: Boolean
+): Rect {
+    val cy = (cell.top + cell.bottom) / 2f
+    val s = if (centerScale && viewportCenterY > 0f) {
+        val t = (abs(cy - viewportCenterY) / (viewportCenterY * 1.05f)).coerceIn(0f, 1f)
+        1.10f - 0.32f * t * t
+    } else 1f
+    val px = screenWidthPx / 2f
+    return Rect(
+        px + (cell.left - px) * s,
+        cy + (cell.top - cy) * s,
+        px + (cell.right - px) * s,
+        cy + (cell.bottom - cy) * s
+    )
+}
+
+/** 某张照片右上角复选圈的热区，坐标在**视觉矩形**空间里；inset/radius 随该行缩放同步放大。 */
+private fun inCheckCircle(
+    visualCell: Rect, p: Offset, inset: Float, radius: Float, scale: Float
+): Boolean {
+    val cx = visualCell.right - inset * scale
+    val cy = visualCell.top + inset * scale
+    return kotlin.math.hypot(p.x - cx, p.y - cy) <= radius * scale
 }
 
 /**
@@ -358,36 +389,40 @@ private suspend fun AwaitPointerEventScope.runSelectionDrag(
     onScroll: (Float) -> Unit,
     onSelectRect: (Offset, Offset) -> Unit,
     allowTap: Boolean,
-    onTapAt: (Offset) -> Unit
+    onTapAt: (Offset) -> Unit,
+    /** 把指针坐标换算到 root 视觉空间供框选用；覆盖层是恒等，长按接续要把 cell 局部坐标换过来。
+     *  注意：滚动/方向判定用**原始**局部坐标——graphicsLayer 只作用于绘制，输入坐标本就是未缩放的，
+     *  若把 delta 也缩放，滚动量会被放大 1/scale 倍。 */
+    mapPoint: (Offset) -> Offset = { it }
 ) {
-    val anchor = down.position
-    var last = anchor
+    val rawAnchor = down.position
+    var last = rawAnchor
     var mode = 0            // 0=未判定 1=纵向滚动 2=横向选取
     var tapped = true
     while (true) {
         val event = awaitPointerEvent(PointerEventPass.Initial)
         val change = event.changes.firstOrNull { it.id == down.id } ?: break
         change.consume()
-        val cur = change.position
-        val dx = cur.x - anchor.x
-        val dy = cur.y - anchor.y
-        if ((cur - anchor).getDistance() > 8f) tapped = false
+        val raw = change.position
+        val dx = raw.x - rawAnchor.x
+        val dy = raw.y - rawAnchor.y
+        if ((raw - rawAnchor).getDistance() > 8f) tapped = false
 
         if (mode == 0) {
             if (maxOf(abs(dx), abs(dy)) > SELECT_DIRECTION_SLOP) {
                 mode = if (abs(dx) > abs(dy)) 2 else 1
                 if (mode == 1) onScroll(-dy)      // 补上判定前已移动的纵向距离，起手不丢位移
-                else onSelectRect(anchor, cur)
+                else onSelectRect(mapPoint(rawAnchor), mapPoint(raw))
             }
         } else if (mode == 1) {
-            onScroll(-(cur.y - last.y))           // 手指往下拖 → 内容往前
+            onScroll(-(raw.y - last.y))           // 手指往下拖 → 内容往前
         } else {
-            onSelectRect(anchor, cur)
+            onSelectRect(mapPoint(rawAnchor), mapPoint(raw))
         }
-        last = cur
+        last = raw
         if (!change.pressed) break
     }
-    if (allowTap && tapped && mode == 0) onTapAt(anchor)
+    if (allowTap && tapped && mode == 0) onTapAt(mapPoint(rawAnchor))
 }
 
 /**
@@ -395,7 +430,7 @@ private suspend fun AwaitPointerEventScope.runSelectionDrag(
  * 缩放/透明度在 graphicsLayer 绘制阶段按滚动位置实时计算，不触发重组。
  */
 @Composable
-private fun ScalingPhotoList(
+internal fun ScalingPhotoList(
     items: List<Photo>,
     columns: Int,
     crownEvents: Flow<Float>,
@@ -470,7 +505,9 @@ private fun ScalingPhotoList(
         )
         val fresh = ArrayList<String>(4)
         for ((uri, cell) in cellRects) {
-            if (cell.overlaps(r) && gestureHits.add(uri)) fresh.add(uri)
+            // 用视觉矩形判定，和看到的照片边界一致
+            val v = visualCellRect(cell, screenHeightPx / 2f, screenWidthPx, centerScale)
+            if (v.overlaps(r) && gestureHits.add(uri)) fresh.add(uri)
         }
         if (fresh.isNotEmpty()) {
             if (deselect) onDeselectRange(fresh) else onSelectRange(fresh)
@@ -640,12 +677,27 @@ private fun ScalingPhotoList(
                                         // （不触发轻点，长按本身已选中这张照片）
                                         // 长按是「从这里开始多选」的动作，所以这个手势永远只加选
                                         gestureHits.clear()
+                                        // 这个 pointerInput 挂在 cell 上，change.position 是 cell 局部坐标；
+                                        // 而 applyRect 用的是 root 视觉矩形，必须换过去，否则会从
+                                        // 屏幕左上角开始框选（表现：选中的是滑动位置上面那张）。
+                                        fun localToVisual(p: Offset): Offset {
+                                            val base = cellRects[photo.uri.toString()]
+                                                ?: return p
+                                            val v = visualCellRect(
+                                                base, screenHeightPx / 2f, screenWidthPx, centerScale
+                                            )
+                                            return Offset(
+                                                v.left + p.x * (v.width / base.width.coerceAtLeast(1f)),
+                                                v.top + p.y * (v.height / base.height.coerceAtLeast(1f))
+                                            )
+                                        }
                                         runSelectionDrag(
                                             down = down,
                                             onScroll = { selectionScroll.tryEmit(it) },
                                             onSelectRect = { a, b -> applyRect(a, b, deselect = false) },
                                             allowTap = false,
-                                            onTapAt = {}
+                                            onTapAt = {},
+                                            mapPoint = ::localToVisual
                                         )
                                     }
                                 }
@@ -723,7 +775,10 @@ private fun ScalingPhotoList(
                             // 加选还是取消，由「起点这张照片当前是否已选中」决定（手机相册同款）：
                             // 从已选中的照片起手 → 整个滑动过程都是取消；从未选中的起手 → 加选。
                             // 这样同一个手势既能快速多选，也能快速反选，不用换按钮。
-                            val startUri = hitCellOrNearest(cellRects, down.position, nearestSlopPx)
+                            val startUri = hitCellOrNearest(
+                                cellRects, down.position, nearestSlopPx,
+                                screenHeightPx / 2f, screenWidthPx, centerScale
+                            )
                             val deselect = startUri != null && startUri in selectedUrisState.value
                             runSelectionDrag(
                                 down = down,
@@ -733,8 +788,16 @@ private fun ScalingPhotoList(
                                 onTapAt = { p ->
                                     if (startUri != null) {
                                         val cell = cellRects[startUri]
+                                        val visual = cell?.let {
+                                            visualCellRect(it, screenHeightPx / 2f, screenWidthPx, centerScale)
+                                        }
+                                        val scale = if (centerScale && visual != null && cell != null) {
+                                            visual.width / cell.width.coerceAtLeast(1f)
+                                        } else 1f
                                         // 点在复选圈上才算「选择」，点照片本体是打开大图
-                                        if (cell != null && inCheckCircle(cell, p, circleInsetPx, circleRadiusPx)) {
+                                        if (visual != null && inCheckCircle(
+                                                visual, p, circleInsetPx, circleRadiusPx, scale
+                                            )) {
                                             onToggle(startUri)
                                         } else {
                                             onRecordOrigin(cell, painterByUri[startUri])
