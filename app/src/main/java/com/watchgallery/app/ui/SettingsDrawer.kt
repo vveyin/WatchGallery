@@ -119,13 +119,17 @@ fun SettingsDrawer(
             }
         }
 
-        // ── 毛玻璃背板：固定铺满整屏，只露出「抽屉盖住的那一块」──
-        if (blurEnabled) {
-            BlurBand(
-                heightPx = { (state.progress.floatValue * collapsedY).coerceIn(0f, screenH) },
-                dim = 0.55f
-            )
-        }
+        // ── 背板：固定铺满整屏，只露出「抽屉盖住的那一块」——与面板退开动画完全解耦 ──
+        // 开模糊 = 图片列表的毛玻璃；关模糊 = 纯色底。两者都在这一层画，
+        // 不画进下面的面板里，因此回收站进出时面板淡出/淡入都不会带走背景，
+        // 露出的始终是这块恒定背板（不再闪出相册图片列表）。
+        // 也正因为进回收站前必定停在设置一级菜单、抽屉满展开，这块背板天然铺满全屏，
+        // 回收站自身无需再画任何背景，直接复用它。
+        BlurBand(
+            heightPx = { (state.progress.floatValue * collapsedY).coerceIn(0f, screenH) },
+            dim = 0.55f,
+            solidColor = if (blurEnabled) null else MaterialTheme.colorScheme.background
+        )
 
         // ── 抽屉面板：整屏，靠 translationY 升降，自身透明（玻璃板）──
         Box(
@@ -144,10 +148,8 @@ fun SettingsDrawer(
                     alpha = cp
                 }
         ) {
-            if (!blurEnabled) {
-                Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
-            }
-
+            // 背景不再画在面板里（面板会随浮层退开淡出，把背景一起淡没）。
+            // 统一由上面那块独立背板负责，面板自身保持透明。
             content()
 
             // 顶部下滑把手：仅设置一级菜单显示，白线在抽屉内容顶部（非屏幕顶部）

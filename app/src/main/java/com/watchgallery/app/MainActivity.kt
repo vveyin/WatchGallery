@@ -444,9 +444,10 @@ private fun AppNavigation(
         // 这样从大图进编辑页能看到图片「浮起来」而不是先黑一下。
         val bg = when {
             screen is Screen.Viewer || screen is Screen.Editor -> Color.Transparent
-            // 回收站开着模糊背景时透明：露出抽屉那层铺满整屏的毛玻璃背板；
-            // 关掉模糊就用纯黑，和以前一致。
-            screen is Screen.Trash && blurBackdrop -> Color.Transparent
+            // 回收站始终不渲染背景：直接复用设置抽屉那层铺满全屏的独立背板——
+            // 开模糊是「图片列表的毛玻璃」，关模糊是纯色底。这块背板画在抽屉层、
+            // 不随面板退开动画淡出，所以进出回收站全程背景恒定，不会闪出相册图片列表。
+            screen is Screen.Trash -> Color.Transparent
             else -> Color.Black
         }
         Box(Modifier.fillMaxSize().background(bg)) {

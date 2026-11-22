@@ -364,7 +364,10 @@ fun BlurBand(
     image: ImageBitmap? = BlurBackdrop.image,
     dim: Float = 0.35f,
     cornerRadiusPx: Float = 0f,
-    fallback: androidx.compose.ui.graphics.Color? = null
+    fallback: androidx.compose.ui.graphics.Color? = null,
+    /** 背景色覆盖：传它则整块背板铺纯色（关闭模糊时用）；为 null 走模糊图/兜底色。
+     *  与 [dim] 互不冲突——纯色模式跳过模糊图，也跳过压暗。 */
+    solidColor: androidx.compose.ui.graphics.Color? = null
 ) {
     val scrim = MaterialTheme.colorScheme.background.copy(alpha = dim)
     val fallbackColor = fallback ?: MaterialTheme.colorScheme.background
@@ -386,21 +389,30 @@ fun BlurBand(
             )
         }
         clipPath(clip) {
-            if (image != null) {
-                // 这张 Canvas 永远铺满整屏，直接把整屏图铺上去：
-                // 像素坐标与屏幕一一对应，抽屉揭开到哪儿都严丝合缝。
-                drawImage(
-                    image = image,
-                    srcOffset = IntOffset.Zero,
-                    srcSize = IntSize(image.width, image.height),
-                    dstOffset = IntOffset.Zero,
-                    dstSize = IntSize(size.width.toInt().coerceAtLeast(1), size.height.toInt().coerceAtLeast(1))
-                )
-            } else {
-                drawRect(fallbackColor, topLeft = Offset(0f, top), size = Size(size.width, h))
+            val solid = solidColor
+            when {
+                solid != null -> {
+                    // 纯色背板（关闭模糊）：整块铺满，不受模糊图/压暗影响。
+                    // 刻意与 BlurBand 同一块 Canvas、同一套高度裁剪，保持「背板恒定、只露抽屉盖住那块」的语义。
+                    drawRect(solid, topLeft = Offset(0f, top), size = Size(size.width, h))
+                }
+                image != null -> {
+                    // 这张 Canvas 永远铺满整屏，直接把整屏图铺上去：
+                    // 像素坐标与屏幕一一对应，抽屉揭开到哪儿都严丝合缝。
+                    drawImage(
+                        image = image,
+                        srcOffset = IntOffset.Zero,
+                        srcSize = IntSize(image.width, image.height),
+                        dstOffset = IntOffset.Zero,
+                        dstSize = IntSize(size.width.toInt().coerceAtLeast(1), size.height.toInt().coerceAtLeast(1))
+                    )
+                    // 压暗：让面板上的文字/图标有对比度
+                    drawRect(scrim, topLeft = Offset(0f, top), size = Size(size.width, h))
+                }
+                else -> {
+                    drawRect(fallbackColor, topLeft = Offset(0f, top), size = Size(size.width, h))
+                }
             }
-            // 压暗：让面板上的文字/图标有对比度
-            drawRect(scrim, topLeft = Offset(0f, top), size = Size(size.width, h))
         }
     }
 }
