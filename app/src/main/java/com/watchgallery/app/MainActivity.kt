@@ -17,6 +17,7 @@ import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -24,6 +25,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.layout.onSizeChanged
@@ -251,6 +253,27 @@ private fun AppNavigation(
     // 设置不再是栈中一页，而是常驻抽屉（SettingsDrawer），盖在主界面之上，用垂直手势升降。
     val backStack = remember { mutableStateListOf<Screen>(Screen.Gallery) }
     var currentPhoto by remember { mutableStateOf<Photo?>(null) }
+    // 大图页的临时图源：从回收站打开时指向回收站列表，普通相册为 null（用主列表）
+    var viewerPhotos by remember { mutableStateOf<List<Photo>?>(null) }
+    // 查看器/编辑器的「来源层」：右划退出时底层要露出的那一页。
+    // 从相册进查看器 = Gallery；从回收站进查看器 = Trash。
+    // 这样退出时露出的就是正确的来源，不会先闪一下图片列表。
+    var viewerUnder by remember { mutableStateOf<Screen>(Screen.Gallery) }
+    // 右划返回共享的水平进度：顶层 SwipeBackContainer 写它，常驻底层读它做跟手缓动。
+    val swipeOffset = remember { androidx.compose.animation.core.Animatable(0f) }
+    // 回收站一旦打开过就常驻在组合里（与相册并列的一层），避免看图退出时被销毁重建。
+    var trashOpened by remember { mutableStateOf(false) }
+    // 从抽屉进入回收站时记下抽屉进度与来源，退出回收站时恢复到「刚刚划到的位置」。
+    var drawerProgressBeforeTrash by remember { mutableFloatStateOf(1f) }
+    var trashFromDrawer by remember { mutableStateOf(false) }
+    // 页面「推入」的水平进度：widthPx = 新页面还在屏幕右侧（刚入栈的第一帧），
+    // 0 = 新页面完全铺满。与右划返回的 swipeOffset 取较大值，统一驱动底层
+    // 「缩小 + 左移 + 变暗」的跟手缓动（设置页二级菜单同款）。
+    val enterOffset = remember { Animatable(0f) }
+    // 出栈计数：浮层移出组合之后再把两个进度归零。若像以前那样在 onBack() 之后
+    // 立刻 snapTo(0)，还没来得及移除的浮层会被拉回原位闪一帧原图。
+    var popTick by remember { mutableIntStateOf(0) }
+    val navScope = rememberCoroutineScope()
     // 大图翻页用「当前上下文」的列表：在文件夹里打开就翻该文件夹，否则翻全部
     val photos by viewModel.viewerPhotos.collectAsState()
     val selectionMode by viewModel.selectionMode.collectAsState()
@@ -295,6 +318,8 @@ private fun AppNavigation(
     // ── 设置抽屉状态 ──
     val density = LocalDensity.current
     val collapsedY = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    // 页面入栈动画用的屏宽（在组合阶段算好，供普通函数 navigate 使用）
+    val enterWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }.coerceAtLeast(1f)
     // 三处抽屉统一用 DrawerState（0 = 收起，1 = 铺满），做法照抄 f-x
     val settingsDrawer = rememberDrawerState(false)
     var settingsOpen by remember { mutableStateOf(false) }
@@ -309,8 +334,58 @@ private fun AppNavigation(
         }
     }
 
-    fun navigate(to: Screen) { backStack.add(to) }
-    fun goBack() { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) }
+    /**
+     * 入栈：先把新页面放到屏幕右侧（第一帧不可见），再推进导航栈，然后缓动滑入。
+     * 同步更新底层进度，底层「一级菜单退开」的动画才不会先瞬移一帧再开始。
+     */
+    fun navigate(to: Screen) {
+        navScope.launch {
+            enterOffset.snapTo(enterWidthPx)
+            backStack.add(to)
+            enterOffset.animateTo(0f, tween(260, easing = FastOutSlowInEasing))
+        }
+    }
+
+    fun goBack() {
+        if (backStack.size > 1) {
+            backStack.removeAt(backStack.lastIndex)
+            popTick++
+        }
+    }
+
+    // 出栈完成后（此时浮层已经移出组合）才把进度归零：
+    // 这样既不会闪一帧原图，下一次入栈也能从干净的 0 开始。
+    LaunchedEffect(popTick) {
+        if (popTick > 0) {
+            swipeOffset.snapTo(0f)
+            enterOffset.snapTo(0f)
+        }
+    }
+
+    /**
+     * 打开回收站：抽屉保持展开，作为回收站返回时的底层 —— 右划返回时抽屉全程可见，
+     * 不再「返回完成才突然出现」。它的面板会随浮层进度淡出/退开（设置二级菜单同款），
+     * 毛玻璃背板则留在原处，正好当回收站的模糊背景。
+     */
+    fun openTrash() {
+        drawerProgressBeforeTrash = settingsDrawer.progress.floatValue
+        trashFromDrawer = true
+        trashOpened = true
+        settingsOpen = false   // 表冠交给回收站；抽屉进度保持不变
+        viewerUnder = Screen.Gallery   // 重置：退出回收站时露出的是相册
+        viewModel.refreshTrash()
+        navigate(Screen.Trash)
+    }
+
+    /** 从回收站退出：回到相册，抽屉本来就一直展开着，只需恢复可交互状态。 */
+    fun onTrashBack() {
+        goBack()
+        if (trashFromDrawer) {
+            settingsOpen = drawerProgressBeforeTrash > 0.5f
+            settingsAtRoot = true
+            trashFromDrawer = false
+        }
+    }
 
     fun openSettings() {
         settingsOpen = true
@@ -362,8 +437,13 @@ private fun AppNavigation(
         val layerCrown = if (interactive && !settingsOpen) crownEvents else emptyFlow()
         // 大图页、编辑页都透明：它们自己带黑底并随入场动画淡入，
         // 这样从大图进编辑页能看到图片「浮起来」而不是先黑一下。
-        val bg = if (screen is Screen.Viewer || screen is Screen.Editor) Color.Transparent
-        else Color.Black
+        val bg = when {
+            screen is Screen.Viewer || screen is Screen.Editor -> Color.Transparent
+            // 回收站开着模糊背景时透明：露出抽屉那层铺满整屏的毛玻璃背板；
+            // 关掉模糊就用纯黑，和以前一致。
+            screen is Screen.Trash && blurBackdrop -> Color.Transparent
+            else -> Color.Black
+        }
         Box(Modifier.fillMaxSize().background(bg)) {
             when (screen) {
                 is Screen.Gallery -> GalleryScreen(
@@ -373,6 +453,8 @@ private fun AppNavigation(
                     animateGifs = animateGifs,
                     onPhotoClick = { photo ->
                         if (interactive) {
+                            viewerPhotos = null   // 普通相册：大图页用主列表
+                            viewerUnder = Screen.Gallery
                             viewerOrigin = viewModel.viewerOrigin
                             viewerThumb = viewModel.viewerThumb
                             currentPhoto = photo
@@ -383,10 +465,11 @@ private fun AppNavigation(
                     onCheckUpdate = { if (interactive) navigate(Screen.Update) }
                 )
                 is Screen.Viewer -> {
-                    val idx = photos.indexOfFirst { it.uri == currentPhoto?.uri }.coerceAtLeast(0)
+                    val viewerList = viewerPhotos ?: photos
+                    val idx = viewerList.indexOfFirst { it.uri == currentPhoto?.uri }.coerceAtLeast(0)
                     PhotoViewerScreen(
                         viewModel = viewModel,
-                        photos = photos,
+                        photos = viewerList,
                         initialIndex = idx,
                         isRound = isRound,
                         crownEvents = layerCrown,
@@ -417,6 +500,24 @@ private fun AppNavigation(
                     crownEvents = layerCrown,
                     onBack = { if (interactive) goBack() }
                 )
+                is Screen.Trash -> TrashScreen(
+                    viewModel = viewModel,
+                    isRound = isRound,
+                    crownEvents = layerCrown,
+                    animateGifs = animateGifs,
+                    onBack = { if (interactive) onTrashBack() },
+                    onOpenPhoto = { photo, all ->
+                        if (interactive) {
+                            viewerPhotos = all       // 大图页翻页用回收站列表
+                            viewerUnder = Screen.Trash // 退出查看器露出的底层是回收站
+                            // 用回收站缩略图的锚点做放大入场动画（TrashScreen 已写入 viewModel）
+                            viewerOrigin = viewModel.viewerOrigin
+                            viewerThumb = viewModel.viewerThumb
+                            currentPhoto = photo
+                            navigate(Screen.Viewer)
+                        }
+                    }
+                )
             }
         }
     }
@@ -424,36 +525,62 @@ private fun AppNavigation(
     // 方屏（设置里选方屏，或系统就是方屏）关掉所有列表的「居中放大」：
     // 直角矩形上这套形变只会让上下两条莫名变小。
     CompositionLocalProvider(LocalCenterMagnify provides isRound) {
-    Box(modifier = Modifier.fillMaxSize().onSizeChanged { rootSize = it }) {
-        // ── 相册常驻最底层 ──
-        // 进大图 / 编辑 / 更新时**不卸载**它：以前是"有下层才套 SwipeBackContainer"，
-        // 退出大图时条件翻转，整棵相册树被重建 —— 缩略图全部重新解码，
-        // 屏幕上就会抽几帧（正方形里塞一张变形图，然后才恢复）。
-        // 现在相册永远在这儿，上层页面只是盖上去，退出时把它露出来即可。
-        ScreenLayer(Screen.Gallery, interactive = current is Screen.Gallery)
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().onSizeChanged { rootSize = it }) {
+        val navWidthPx = with(density) { maxWidth.toPx() }.coerceAtLeast(1f)
 
-        // 上层：栈顶那一屏。右划返回只作用在这一层，底下相册已经画好了，不再复制一份。
-        // 编辑页例外：调参数、涂鸦时特别容易误触左缘，所以**禁用右划返回**，
-        // 返回只走抽屉里那颗按钮（编辑页自己的进出场动画也才不会被手势打断）。
-        if (current !is Screen.Gallery) {
-            if (current is Screen.Editor) {
-                ScreenLayer(current, interactive = true)
-            } else {
-                SwipeBackContainer(
-                    onBack = { goBack() },
-                    backContent = {},
-                    content = { ScreenLayer(current, interactive = true) }
-                )
-            }
+        // ── 常驻底层：相册 + 回收站 ──
+        // 进大图 / 编辑 / 更新 / 回收站看图时都**不卸载**这两层：
+        // 退出时条件翻转会整棵重建、缩略图重新解码而闪烁，所以它们永远在组合里，
+        // 上层页面只是盖上去。右划返回时，底层读共享的 swipeOffset 做跟手缩放/透明
+        // （与设置页二级菜单同款缓动）；露出的到底是相册还是回收站，由 backIsTrash 决定。
+
+        // 谁是当前「浮层」（顶层），谁就是「返回底层」——决定跟手变换的方向：
+        //  - 浮层：跟手右移 + 淡出（front）
+        //  - 底层：从缩小/变暗平滑放大回正（back，设置页同款）
+        // 相册/回收站/查看器之间来回切换时，底层与浮层角色会互换，这里按 current 判定。
+        // 变换计算放在文件级普通函数里（见 backLayerTransform / frontLayerTransform），
+        // 避免在 graphicsLayer 的隐式 receiver 里做浮点运算触发 Kotlin 运算符歧义。
+
+        // 相册层：始终常驻最底。
+        //  - 当前就是相册：正常铺满。
+        //  - 浮层是从相册进去的（看图 / 更新）：作为返回底层跟手。
+        //  - 浮层来自回收站：相册被回收站盖住，保持正常（回收站自己当底层跟手）。
+        val galleryIsBack = current !is Screen.Gallery && viewerUnder !is Screen.Trash
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    if (galleryIsBack) {
+                        // 取「入栈进度」与「返回进度」的较大值：入栈时从 1→0 平滑退开，
+                        // 右划返回时从 0→1 平滑回正，两段共用同一条曲线。
+                        val t = backLayerTransform(maxOf(enterOffset.value, swipeOffset.value), navWidthPx)
+                        scaleX = t.scale; scaleY = t.scale
+                        translationX = t.translationX; alpha = t.alpha
+                    } else {
+                        scaleX = 1f; scaleY = 1f; translationX = 0f; alpha = 1f
+                    }
+                }
+        ) {
+            ScreenLayer(Screen.Gallery, interactive = current is Screen.Gallery)
         }
 
-        // 设置抽屉：常驻，盖在主导航层之上
+        // 设置抽屉：夹在相册与回收站之间。这样从回收站右划返回时，抽屉作为「返回底层」
+        // 在整个手势过程中都露得出来，而不是返回完成才突然出现。
+        //  - 抽屉面板：随浮层进度做「缩小 + 左移 + 淡出」（设置二级菜单同款退开动画）；
+        //  - 毛玻璃背板：不受影响，始终铺满，正好当回收站的模糊背景。
+        val drawerIsBack = current is Screen.Trash ||
+            (current !is Screen.Gallery && current !is Screen.Trash && viewerUnder is Screen.Trash)
+        val drawerCover: () -> Float = {
+            if (!drawerIsBack) 1f
+            else (maxOf(enterOffset.value, swipeOffset.value) / navWidthPx).coerceIn(0f, 1f)
+        }
         SettingsDrawer(
             state = settingsDrawer,
             collapsedY = collapsedY,
             canDragDown = settingsAtRoot,
             enabled = !settingsOpen && current is Screen.Gallery && !selectionMode,
             blurEnabled = blurBackdrop,
+            coverProgress = drawerCover,
             onOpened = { settingsOpen = true },
             onClosed = { settingsOpen = false }
         ) {
@@ -464,8 +591,70 @@ private fun AppNavigation(
                 crownEvents = if (settingsOpen) crownEvents else emptyFlow(),
                 onBack = {},
                 onCrownPrefsChanged = onCrownPrefsChanged,
-                onSubPageChanged = { settingsAtRoot = it }
+                onSubPageChanged = { settingsAtRoot = it },
+                onOpenTrash = { openTrash() }
             )
+        }
+
+        // 回收站层：打开过就常驻在相册之上（与看图退出共用同一实例，不销毁）。
+        // 三种角色：
+        //  - current=Trash：它是浮层 → frontTransform + 右划手势
+        //  - current 是从回收站进的浮层（看图）：它是返回底层 → backTransform
+        //  - 其它：平移出屏幕（不参与命中）。
+        if (trashOpened) {
+            val trashIsFront = current is Screen.Trash
+            val trashIsBack = current !is Screen.Gallery && current !is Screen.Trash &&
+                viewerUnder is Screen.Trash
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .graphicsLayer {
+                        when {
+                            trashIsFront -> {
+                                // 入栈：滑入屏幕（enterOffset 从 widthPx→0）；
+                                // 右划返回：跟手右移（swipeOffset 从 0→widthPx）。
+                                val off = maxOf(enterOffset.value, swipeOffset.value)
+                                translationX = off
+                                alpha = frontLayerAlpha(off, navWidthPx)
+                                scaleX = 1f; scaleY = 1f
+                            }
+                            trashIsBack -> {
+                                val t = backLayerTransform(maxOf(enterOffset.value, swipeOffset.value), navWidthPx)
+                                scaleX = t.scale; scaleY = t.scale
+                                translationX = t.translationX; alpha = t.alpha
+                            }
+                            else -> {
+                                translationX = navWidthPx * 2f; alpha = 1f
+                                scaleX = 1f; scaleY = 1f
+                            }
+                        }
+                    }
+                    .swipeBackGesture(
+                        offsetX = swipeOffset,
+                        onBack = { onTrashBack() },
+                        enabled = trashIsFront
+                    )
+            ) {
+                ScreenLayer(
+                    Screen.Trash,
+                    interactive = trashIsFront && swipeOffset.value < 1f
+                )
+            }
+        }
+
+        // 上层：栈顶那一屏。右划返回只作用在这一层，底下已经画好，不再复制一份。
+        // 编辑页例外：调参数、涂鸦时特别容易误触左缘，所以**禁用右划返回**。
+        if (current !is Screen.Gallery && current !is Screen.Trash) {
+            if (current is Screen.Editor) {
+                ScreenLayer(current, interactive = true)
+            } else {
+                SwipeBackContainer(
+                    onBack = { goBack() },
+                    backContent = {},
+                    content = { ScreenLayer(current, interactive = true) },
+                    offsetX = swipeOffset
+                )
+            }
         }
 
         SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
@@ -490,6 +679,26 @@ private sealed class Screen {
     data object Viewer : Screen()
     data object Editor : Screen()
     data object Update : Screen()
+    data object Trash : Screen()
+}
+
+/** 右划返回时「返回底层」的跟手变换：从缩小/左偏/变暗平滑放大回正 */
+private data class LayerTransform(val scale: Float, val translationX: Float, val alpha: Float)
+
+private fun backLayerTransform(offsetX: Float, widthPx: Float): LayerTransform {
+    val progress = (offsetX / widthPx).coerceIn(0f, 1f)
+    val eased = 1f - (1f - progress) * (1f - progress)
+    return LayerTransform(
+        scale = 0.90f + 0.10f * eased,
+        translationX = -widthPx * 0.05f * (1f - eased),
+        alpha = 0.65f + 0.35f * eased
+    )
+}
+
+/** 右划返回时「当前浮层」的透明度：跟手右移由 graphicsLayer 直接写 translationX */
+private fun frontLayerAlpha(offsetX: Float, widthPx: Float): Float {
+    val progress = (offsetX / widthPx).coerceIn(0f, 1f)
+    return 1f - 0.38f * progress
 }
 
 /** 进程级标记：本次进程是否已做过冷启动更新检测（进程重启才重置） */

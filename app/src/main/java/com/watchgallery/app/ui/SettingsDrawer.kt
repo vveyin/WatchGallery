@@ -50,10 +50,14 @@ fun SettingsDrawer(
     blurEnabled: Boolean,
     onOpened: () -> Unit,
     onClosed: () -> Unit,
+    /** 面板被浮层盖住的程度：1 = 完全露出，0 = 完全退开（回收站的返回底层）。
+     *  用 lambda 而不是 Float：进度每帧都在变，放进绘制阶段读只重绘不重组。 */
+    coverProgress: () -> Float = { 1f },
     content: @Composable () -> Unit
 ) {
     val density = LocalDensity.current
     val slopPx = with(density) { 5.dp.toPx() }
+    val screenW = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
 
     val view = LocalView.current
     val window = remember(view) { view.context.findHostActivity()?.window }
@@ -127,7 +131,18 @@ fun SettingsDrawer(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .graphicsLayer { translationY = (1f - state.progress.floatValue) * collapsedY }
+                .graphicsLayer {
+                    translationY = (1f - state.progress.floatValue) * collapsedY
+                    // 浮层盖住时面板「缩小 + 左移 + 淡出」，露出时平滑回正：
+                    // 与设置二级菜单的一级菜单退开完全同一套参数。
+                    val cp = coverProgress().coerceIn(0f, 1f)
+                    val eased = 1f - (1f - cp) * (1f - cp)
+                    val s = 0.90f + 0.10f * eased
+                    scaleX = s
+                    scaleY = s
+                    translationX = -screenW * 0.05f * (1f - eased)
+                    alpha = cp
+                }
         ) {
             if (!blurEnabled) {
                 Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background))
