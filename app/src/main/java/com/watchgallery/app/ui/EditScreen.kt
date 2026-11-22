@@ -120,8 +120,8 @@ private val TextColors = listOf<Int>(
     0xFFFDD835.toInt(), 0xFF43A047.toInt(), 0xFF1E88E5.toInt(), 0xFF8E24AA.toInt()
 )
 
-/** 读不到图片尺寸时的兜底放大上限（正常情况下按屏幕像素现算，见 [maxZoom]） */
-private const val EDIT_MAX_SCALE = 6f
+/** 读不到图片尺寸时的兜底放大上限（正常情况下按屏幕像素现算，见 [maxZoom]），原 6f 的两倍 */
+private const val EDIT_MAX_SCALE = 12f
 
 /**
  * 编辑页里的一个文本框（坐标、字号都是**原图像素**）。
@@ -210,13 +210,14 @@ fun EditScreen(
     val screenLongPx = with(density) { maxOf(cfg.screenWidthDp, cfg.screenHeightDp).dp.toPx() }
 
     /**
-     * 编辑页的放大上限：同样按**屏幕像素**算 —— 原图长边 / 屏幕长边 × 2.3（1:1 的两倍多）。
+     * 编辑页的放大上限：同样按**屏幕像素**算 —— 原图长边 / 屏幕长边 × 4.6
+     * （1:1 的 4.6 倍余量，即原 2.3 倍的两倍）。
      * 小图不会被拉到模糊，长图又能放到看清细节；不再是一个写死的倍数。
      */
     val maxZoom = remember(sourceBitmap, screenLongPx) {
         val b = sourceBitmap
         if (b == null || screenLongPx <= 0f) EDIT_MAX_SCALE
-        else (maxOf(b.width, b.height) / screenLongPx * 2.3f).coerceIn(2f, 24f)
+        else (maxOf(b.width, b.height) / screenLongPx * 4.6f).coerceIn(4f, 48f)
     }
 
     // ── 抽屉：0 = 不显示，1 = 全屏 ──
