@@ -80,6 +80,11 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
+import java.text.SimpleDateFormat
+import java.util.Calendar
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 import kotlin.math.abs
 
 /**
@@ -121,6 +126,7 @@ fun GalleryScreen(
     val visibleCount by viewModel.visibleCount.collectAsState()
     val totalCount by viewModel.totalCountFlow.collectAsState()
     val gridColumns by viewModel.gridColumns.collectAsState()
+    val sortMode by viewModel.sortMode.collectAsState()
     val showPhotoNames by viewModel.showPhotoNames.collectAsState()
     val selectionMode by viewModel.selectionMode.collectAsState()
     val selectedUris by viewModel.selectedUris.collectAsState()
@@ -253,7 +259,8 @@ fun GalleryScreen(
                                     onSelectRange = { viewModel.addSelected(it) },
                                     onDeselectRange = { viewModel.removeSelected(it) },
                                     onCancelSelection = { viewModel.exitSelectionMode() },
-                                    onDeleteSelected = { viewModel.deleteSelected() }
+                                    onDeleteSelected = { viewModel.deleteSelected() },
+                                    sortMode = sortMode
                                 )
                             }
                         }
@@ -291,7 +298,8 @@ fun GalleryScreen(
                     onSelectRange = { viewModel.addSelected(it) },
                     onDeselectRange = { viewModel.removeSelected(it) },
                     onCancelSelection = { viewModel.exitSelectionMode() },
-                    onDeleteSelected = { viewModel.deleteSelected() }
+                    onDeleteSelected = { viewModel.deleteSelected() },
+                    sortMode = sortMode
                 )
             }
         }
@@ -425,6 +433,77 @@ private suspend fun AwaitPointerEventScope.runSelectionDrag(
     if (allowTap && tapped && mode == 0) onTapAt(mapPoint(rawAnchor))
 }
 
+/** 图片列表的一行：要么是跨整行的日期标题，要么是一张照片 */
+private sealed class PhotoRow {
+    data class Header(val label: String, val key: String) : PhotoRow()
+    data class Photo(val photo: com.watchgallery.app.data.Photo) : PhotoRow()
+}
+
+/** 把照片按排序方式拆成「日期标题 + 照片」的行序列；不排序时原样平铺。
+ *  数据源已按 dateAdded 倒序，因此相同分组键的照片天然相邻，直接顺序扫描即可。 */
+private fun buildPhotoRows(items: List<com.watchgallery.app.data.Photo>, mode: PhotoSortMode): List<PhotoRow> {
+    if (mode == PhotoSortMode.NONE || items.isEmpty()) return items.map { PhotoRow.Photo(it) }
+    val cal = Calendar.getInstance().apply { timeZone = TimeZone.getDefault() }
+    val dayFmt = SimpleDateFormat("M月d日", Locale.getDefault())
+    val monthFmt = SimpleDateFormat("yyyy年M月", Locale.getDefault())
+    val yearFmt = SimpleDateFormat("yyyy年", Locale.getDefault())
+    val rows = ArrayList<PhotoRow>(items.size + 8)
+    var lastKey: String? = null
+    for (photo in items) {
+        cal.timeInMillis = photo.dateAdded * 1000L
+        val (key, label) = when (mode) {
+            PhotoSortMode.DAY -> {
+                val y = cal.get(Calendar.YEAR)
+                val d = cal.get(Calendar.DAY_OF_YEAR)
+                "${y}-${d}" to dayFmt.format(Date(photo.dateAdded * 1000L))
+            }
+            PhotoSortMode.MONTH -> {
+                val key2 = "${cal.get(Calendar.YEAR)}-${cal.get(Calendar.MONTH)}"
+                key2 to monthFmt.format(Date(photo.dateAdded * 1000L))
+            }
+            PhotoSortMode.YEAR -> {
+                val y = cal.get(Calendar.YEAR)
+                "$y" to yearFmt.format(Date(photo.dateAdded * 1000L))
+            }
+            PhotoSortMode.NONE -> "" to ""
+        }
+        if (key != lastKey) {
+            rows.add(PhotoRow.Header(label, "hdr_$key"))
+            lastKey = key
+        }
+        rows.add(PhotoRow.Photo(photo))
+    }
+    return rows
+}
+
+/** 跨整行的日期标题：左边一小截主色竖条 + 日期文字，圆屏上收窄避免顶到弧边。 */
+@Composable
+private fun DateHeader(label: String, centerScale: Boolean) {
+    // 圆屏上左右各留一点，文字整体收窄，避免弧边切掉；方屏不收窄
+    val sidePad = if (centerScale) LocalConfiguration.current.screenWidthDp.dp * 0.14f else 0.dp
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp, bottom = 2.dp, start = sidePad, end = sidePad),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Box(
+            Modifier
+                .width(3.dp)
+                .height(15.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(MaterialTheme.colorScheme.primary)
+        )
+        Spacer(Modifier.width(7.dp))
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = MaterialTheme.colorScheme.primary
+        )
+    }
+}
+
 /**
  * 正方形网格照片列表：每排 [columns] 张，越靠近视口中心的「行」越大、上下淡出。
  * 缩放/透明度在 graphicsLayer 绘制阶段按滚动位置实时计算，不触发重组。
@@ -451,7 +530,9 @@ internal fun ScalingPhotoList(
     onSelectRange: (Collection<String>) -> Unit,
     onDeselectRange: (Collection<String>) -> Unit,
     onCancelSelection: () -> Unit,
-    onDeleteSelected: () -> Unit
+    onDeleteSelected: () -> Unit,
+    /** 排序 / 分组方式：非 NONE 时在每组照片前插入跨整行的日期标题 */
+    sortMode: PhotoSortMode = PhotoSortMode.NONE
 ) {
     val gridState = rememberLazyGridState()
     val density = LocalDensity.current
@@ -528,19 +609,22 @@ internal fun ScalingPhotoList(
         gridState.scrollBy(step)
     }
 
+    // 按排序方式把照片拆成「日期标题 + 照片」的行序列。不排序时就是照片本身。
+    val photoRows = remember(items, sortMode) { buildPhotoRows(items, sortMode) }
+
     // 快滑到底就预加载下一批：屏幕底部那一排和当前最后一张照片之间还剩
     // [PRELOAD_ROWS] 排的距离时就开始加载，不用等真的滚到最后一条。
     //
-    // 这里必须把 items.size / hasMore / columns 当 remember 的 key：
+    // 这里必须把 photoRows.size / hasMore / columns 当 remember 的 key：
     // 旧写法是 remember { derivedStateOf { ... } }，lambda 在**首次组合**时就把
     // items（空列表）和 hasMore（false）捕获死了 —— 之后列表怎么变，判断里用的
     // 永远是「hasMore = false」，所以底部那行「继续下滑加载更多」一直挂着却从不加载。
-    val needMore by remember(items.size, hasMore, columns) {
+    val needMore by remember(photoRows.size, hasMore, columns) {
         derivedStateOf {
             if (!hasMore) return@derivedStateOf false
             val last = gridState.layoutInfo.visibleItemsInfo.lastOrNull()?.index
                 ?: return@derivedStateOf false
-            last >= items.size - columns * PRELOAD_ROWS
+            last >= photoRows.size - columns * PRELOAD_ROWS
         }
     }
     LaunchedEffect(needMore) {
@@ -568,7 +652,20 @@ internal fun ScalingPhotoList(
             // 而左右 contentPadding 不变，所以整排的外沿位置保持原样。
             horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
-            items(items, key = { it.uri.toString() }) { photo ->
+            items(
+                items = photoRows,
+                key = { row -> when (row) {
+                    is PhotoRow.Header -> row.key
+                    is PhotoRow.Photo -> row.photo.uri.toString()
+                } },
+                span = { row -> if (row is PhotoRow.Header) GridItemSpan(columns) else GridItemSpan(1) }
+            ) { row ->
+              when (row) {
+                is PhotoRow.Header -> {
+                    DateHeader(label = row.label, centerScale = centerScale)
+                }
+                is PhotoRow.Photo -> {
+                val photo = row.photo
                 // 滚出屏幕被回收时清掉矩形，避免复制剩余项里残留旧坐标、划选误中屏幕外的照片
                 DisposableEffect(photo.uri) {
                     onDispose { cellRects.remove(photo.uri.toString()) }
@@ -743,7 +840,9 @@ internal fun ScalingPhotoList(
                         SelectionCheck(checked = photo.uri.toString() in selectedUris)
                     }
                 }
-            }
+                } // PhotoRow.Photo
+              } // when
+            } // items(photoRows)
             if (hasMore) {
                 item(span = { GridItemSpan(columns) }, key = "load_more_footer") {
                     Box(

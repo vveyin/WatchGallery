@@ -37,12 +37,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -134,7 +136,8 @@ fun PhotoViewerScreen(
     thumb: androidx.compose.ui.graphics.painter.Painter? = null,
     blurEnabled: Boolean = true,
     onBack: () -> Unit,
-    onEdit: (Photo) -> Unit
+    onEdit: (Photo) -> Unit,
+    onDelete: (Photo) -> Unit = {}
 ) {
     var index by remember {
         mutableIntStateOf(initialIndex.coerceIn(0, (photos.size - 1).coerceAtLeast(0)))
@@ -754,6 +757,23 @@ fun PhotoViewerScreen(
                         )
                         Spacer(Modifier.width(6.dp))
                         Text("重命名", style = MaterialTheme.typography.labelMedium)
+                    }
+
+                    Spacer(Modifier.height(7.dp))
+
+                    OutlinedButton(
+                        onClick = { onDelete(photo) },
+                        modifier = Modifier
+                            .widthIn(min = 118.dp)
+                            .height(34.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = MaterialTheme.colorScheme.error
+                        )
+                    ) {
+                        Icon(Icons.Filled.Delete, null, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("删除", style = MaterialTheme.typography.labelMedium)
                     }
 
                     Spacer(Modifier.weight(1f))

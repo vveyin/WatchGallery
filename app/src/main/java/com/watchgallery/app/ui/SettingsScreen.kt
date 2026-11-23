@@ -141,6 +141,7 @@ fun SettingsScreen(
                 onOpenTrash = onOpenTrash,
                 onOpenCrown = { subPage = SubPage.Crown },
                 onOpenTheme = { subPage = SubPage.Theme },
+                onOpenSort = { subPage = SubPage.Sort },
                 onOpenDiag = { subPage = SubPage.Diag },
                 onOpenHidden = { subPage = SubPage.Hidden },
                 onOpenUpdate = { subPage = SubPage.Update },
@@ -219,6 +220,10 @@ fun SettingsScreen(
                         viewModel = viewModel,
                         crownEvents = crownEvents
                     )
+                    SubPage.Sort -> SortSettings(
+                        viewModel = viewModel,
+                        crownEvents = crownEvents
+                    )
                     SubPage.Diag -> ScanDiagSettings(
                         viewModel = viewModel,
                         crownEvents = crownEvents
@@ -243,6 +248,7 @@ private sealed class SubPage {
     data object Main : SubPage()
     data object Crown : SubPage()
     data object Theme : SubPage()
+    data object Sort : SubPage()
     data object Diag : SubPage()
     data object Hidden : SubPage()
     data object Update : SubPage()
@@ -258,12 +264,14 @@ private fun SettingsMain(
     onOpenTrash: () -> Unit,
     onOpenCrown: () -> Unit,
     onOpenTheme: () -> Unit,
+    onOpenSort: () -> Unit,
     onOpenDiag: () -> Unit,
     onOpenHidden: () -> Unit,
     onOpenUpdate: () -> Unit,
     onOpenAbout: () -> Unit
 ) {
     val themeMode by viewModel.themeMode.collectAsState()
+    val sortMode by viewModel.sortMode.collectAsState()
     val crownMode by viewModel.crownMode.collectAsState()
     val crownSpeed by viewModel.crownSpeed.collectAsState()
     val gridColumns by viewModel.gridColumns.collectAsState()
@@ -395,6 +403,21 @@ private fun SettingsMain(
                 subtitle = "$gridColumns 张 · 点击切换 2/3 张",
                 onClick = { viewModel.setGridColumns(if (gridColumns == 2) 3 else 2) },
                 itemKey = "row_grid"
+            )
+        }
+        item(key = "row_sort") {
+            val sortLabel = when (sortMode) {
+                PhotoSortMode.DAY -> "按天排序 · 同天照片聚在一起，标出月日"
+                PhotoSortMode.MONTH -> "按月排序 · 同月照片聚在一起，标出年月"
+                PhotoSortMode.YEAR -> "按年排序 · 同年照片聚在一起，标出年份"
+                PhotoSortMode.NONE -> "不排序 · 只按时间顺序平铺"
+            }
+            SettingButton(
+                icon = Icons.Filled.Sort,
+                title = "图片排序方式",
+                subtitle = sortLabel,
+                onClick = onOpenSort,
+                itemKey = "row_sort"
             )
         }
         item(key = "row_names") {
@@ -650,6 +673,54 @@ private fun ThemeSettings(
                         selected = selected,
                         label = label,
                         onClick = { viewModel.setThemeMode(mode) },
+                        modifier = Modifier.fillMaxWidth().height(44.dp).settingItem(mk)
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** 图片排序方式二级页：按天 / 按月 / 按年 / 不排序 */
+@Composable
+private fun SortSettings(
+    viewModel: GalleryViewModel,
+    crownEvents: Flow<Float>
+) {
+    val current by viewModel.sortMode.collectAsState()
+    val options = listOf(
+        PhotoSortMode.DAY to "按天排序",
+        PhotoSortMode.MONTH to "按月排序",
+        PhotoSortMode.YEAR to "按年排序",
+        PhotoSortMode.NONE to "不排序"
+    )
+    ScalingScrollColumn(crownEvents = crownEvents) {
+        item(key = "sort_title") {
+            Box(Modifier.fillMaxWidth().height(28.dp).settingItem("sort_title", scale = false),
+                contentAlignment = Alignment.Center) {
+                Text("图片排序方式", style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+        item(key = "sort_desc") {
+            Box(Modifier.fillMaxWidth().settingItem("sort_desc", scale = false)) {
+                Text(
+                    "按天 / 月 / 年排序会把同一时间段的照片聚在一起，并在上方标出所属日期。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+        options.forEach { (mode, label) ->
+            item(key = "sort_${mode.name}") {
+                val mk = "sort_${mode.name}"
+                Box(Modifier.fillMaxWidth().height(56.dp), contentAlignment = Alignment.Center) {
+                    OptionButton(
+                        selected = mode == current,
+                        label = label,
+                        onClick = { viewModel.setSortMode(mode) },
                         modifier = Modifier.fillMaxWidth().height(44.dp).settingItem(mk)
                     )
                 }

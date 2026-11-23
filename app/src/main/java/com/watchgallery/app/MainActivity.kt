@@ -47,6 +47,7 @@ import com.watchgallery.app.util.UpdateChecker
 import com.watchgallery.app.ui.*
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
@@ -432,6 +433,14 @@ private fun AppNavigation(
         }
     }
 
+    // 看图抽屉里删除成功后回到相册：删除走的是系统确认弹窗，弹窗关掉后这里收到事件，
+    // 若还停在看图页就退回底层（可能是相册或最近删除）。
+    LaunchedEffect(Unit) {
+        viewModel.viewerDeleteDone.collect {
+            if (backStack.lastOrNull() is Screen.Viewer) goBack()
+        }
+    }
+
     // 渲染某一层界面。
     // - 除大图页外都垫不透明纯黑背景：右划露出下层时不被透视叠加。
     // - **大图页故意透明**：入场动画期间要能看见下面那张相册，等图片长大、黑底淡入，
@@ -486,6 +495,9 @@ private fun AppNavigation(
                         onBack = { if (interactive) goBack() },
                         onEdit = { photo ->
                             if (interactive) { currentPhoto = photo; navigate(Screen.Editor) }
+                        },
+                        onDelete = { photo ->
+                            if (interactive) viewModel.deleteOneFromViewer(photo)
                         }
                     )
                 }

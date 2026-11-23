@@ -38,6 +38,26 @@ import kotlinx.coroutines.launch
 /** 照片列表的两种浏览方式 */
 enum class GalleryViewMode { FLAT, FOLDER }
 
+/** 照片排序 / 分组方式：按天、按月、按年、不排序（默认按天） */
+enum class PhotoSortMode {
+    DAY, MONTH, YEAR, NONE;
+
+    companion object {
+        fun fromKey(key: String?): PhotoSortMode = when (key) {
+            "month" -> MONTH
+            "year" -> YEAR
+            "none" -> NONE
+            else -> DAY
+        }
+        fun key(mode: PhotoSortMode): String = when (mode) {
+            DAY -> "day"
+            MONTH -> "month"
+            YEAR -> "year"
+            NONE -> "none"
+        }
+    }
+}
+
 class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     private val repo = MediaRepository(app)
@@ -166,6 +186,17 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         val c = columns.coerceIn(2, 3)
         _gridColumns.value = c
         prefs.edit().putInt("grid_columns", c).apply()
+    }
+
+    /** 图片排序 / 分组方式，默认按天；存 SharedPreferences 持久化 */
+    private val _sortMode = MutableStateFlow(
+        PhotoSortMode.fromKey(prefs.getString("sort_mode", "day"))
+    )
+    val sortMode: StateFlow<PhotoSortMode> = _sortMode
+
+    fun setSortMode(mode: PhotoSortMode) {
+        _sortMode.value = mode
+        prefs.edit().putString("sort_mode", PhotoSortMode.key(mode)).apply()
     }
 
     /** 图片列表是否显示图片名，默认显示；设置页可关 */
@@ -380,6 +411,44 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _deleteRequest = MutableStateFlow<SystemDeleteRequest?>(null)
     val deleteRequest: StateFlow<SystemDeleteRequest?> = _deleteRequest
 
+    /** 从看图抽屉发起的删除成功后发一次，UI 据此退出看图页 */
+    private val _viewerDeleteDone = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val viewerDeleteDone: SharedFlow<Unit> = _viewerDeleteDone
+
+    /** 本次删除是否来自看图抽屉：成功后除了刷新，还要通知退出看图 */
+    private var deleteFromViewer = false
+
+    /**
+     * 从看图抽屉删除当前这一张：复用系统确认弹窗流程（先备份进最近删除）。
+     * 不走多选模式，直接把待删集合设为这一张。
+     */
+    fun deleteOneFromViewer(photo: Photo) {
+        val targets = listOf(photo)
+        pendingCount = targets.size
+        pendingAll = targets
+        deleteFromViewer = true
+        viewModelScope.launch {
+            val backup = trashRepo.backup(targets)
+            if (!backup.ok) {
+                _message.value = "备份失败，已取消删除"
+                pendingCount = 0
+                pendingAll = emptyList()
+                deleteFromViewer = false
+                return@launch
+            }
+            pendingTrashNames = backup.names
+            val plan = repo.buildDeletePlan(targets)
+            pendingPrivate = plan.privatePhotos
+            val sender = repo.createSystemDeleteRequest(plan.mediaUris)
+            if (sender != null) {
+                _deleteRequest.value = SystemDeleteRequest(sender, ++deleteRequestId)
+            } else {
+                pendingPrivate = emptyList()
+                doDelete(targets)
+            }
+        }
+    }
+
     private var deleteRequestId = 0L
 
     /** 系统弹窗确认后仍需应用自己删的私有文件 */
@@ -452,6 +521,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             // 用户取消：回滚回收站备份，原图保持不动
             trashRepo.rollback(backupNames)
             _message.value = "已取消删除"
+            deleteFromViewer = false
             return
         }
         viewModelScope.launch {
@@ -463,6 +533,10 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
                 else "已移入最近删除，部分导入文件清理失败"
             exitSelectionMode()
             refresh()
+            if (deleteFromViewer) {
+                deleteFromViewer = false
+                _viewerDeleteDone.emit(Unit)
+            }
         }
     }
 
@@ -499,6 +573,12 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             pendingCount = 0
             exitSelectionMode()
             refresh()
+            if (deleteFromViewer && ok > 0) {
+                deleteFromViewer = false
+                _viewerDeleteDone.emit(Unit)
+            } else {
+                deleteFromViewer = false
+            }
         }
     }
 
