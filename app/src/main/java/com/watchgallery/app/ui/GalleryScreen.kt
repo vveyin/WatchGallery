@@ -34,6 +34,7 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
@@ -476,14 +477,58 @@ private fun buildPhotoRows(items: List<com.watchgallery.app.data.Photo>, mode: P
     return rows
 }
 
-/** 跨整行的日期标题：左边一小截主色竖条 + 日期文字，圆屏上收窄避免顶到弧边。 */
+/** 跨整行的日期标题：左边一小截主色竖条 + 日期文字，圆屏上收窄避免顶到弧边。
+ *  与照片 cell 同款：越靠近视口中心越大、越清晰，越远离越小越淡。 */
 @Composable
-private fun DateHeader(label: String, centerScale: Boolean) {
-    // 圆屏上左右各留一点，文字整体收窄，避免弧边切掉；方屏不收窄
-    val sidePad = if (centerScale) LocalConfiguration.current.screenWidthDp.dp * 0.14f else 0.dp
+private fun DateHeader(
+    label: String,
+    centerScale: Boolean,
+    gridState: LazyGridState,
+    screenHeightPx: Float
+) {
+    // 圆屏上左右各留一点（缩小到原来的 1/3），让日期文字更贴近左边；方屏不收窄
+    val sidePad = if (centerScale) LocalConfiguration.current.screenWidthDp.dp * (0.14f / 3f) else 0.dp
+    // 与照片同款的入场浮现
+    val appear = remember(label) { Animatable(0f) }
+    LaunchedEffect(label) {
+        appear.animateTo(1f, tween(220, easing = FastOutSlowInEasing))
+    }
+    // 本行中心的 root y 坐标，用于算到视口中心的距离；measured 防止滚出顶部时跳回原尺寸
+    val headerCenterY = remember(label) { mutableFloatStateOf(0f) }
+    val measured = remember(label) { mutableStateOf(false) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .onGloballyPositioned { coords ->
+                val pos = coords.positionInRoot()
+                headerCenterY.floatValue = pos.y + coords.size.height / 2f
+                measured.value = true
+            }
+            .graphicsLayer {
+                // 读滚动状态，使缩放随滚动在绘制阶段实时重算，不触发重组
+                gridState.firstVisibleItemIndex
+                gridState.firstVisibleItemScrollOffset
+
+                val cy = headerCenterY.floatValue
+                val viewportCenter = screenHeightPx / 2f
+                if (centerScale && measured.value && viewportCenter > 0f) {
+                    val distance = kotlin.math.abs(cy - viewportCenter)
+                    val radius = viewportCenter * 1.05f
+                    val t = (distance / radius).coerceIn(0f, 1f)
+                    val eased = t * t
+                    val sc = (1.10f - 0.32f * eased) * (0.88f + 0.12f * appear.value)
+                    scaleX = sc
+                    scaleY = sc
+                    alpha = (1f - 0.55f * t) * appear.value
+                    // 本行铺满整宽，锚点取自身中线即屏幕水平中线，与照片整排缩放一致
+                    transformOrigin = TransformOrigin(0.5f, 0.5f)
+                } else {
+                    val a = appear.value
+                    alpha = a
+                    scaleX = 0.88f + 0.12f * a
+                    scaleY = 0.88f + 0.12f * a
+                }
+            }
             .padding(top = 10.dp, bottom = 2.dp, start = sidePad, end = sidePad),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -662,7 +707,12 @@ internal fun ScalingPhotoList(
             ) { row ->
               when (row) {
                 is PhotoRow.Header -> {
-                    DateHeader(label = row.label, centerScale = centerScale)
+                    DateHeader(
+                        label = row.label,
+                        centerScale = centerScale,
+                        gridState = gridState,
+                        screenHeightPx = screenHeightPx
+                    )
                 }
                 is PhotoRow.Photo -> {
                 val photo = row.photo
