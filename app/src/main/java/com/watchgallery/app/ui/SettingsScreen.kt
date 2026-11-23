@@ -86,7 +86,8 @@ fun SettingsScreen(
     crownEvents: Flow<Float>,
     onBack: () -> Unit,
     onCrownPrefsChanged: () -> Unit,
-    onSubPageChanged: (Boolean) -> Unit = {}
+    onSubPageChanged: (Boolean) -> Unit = {},
+    onOpenTrash: () -> Unit = {}
 ) {
     var subPage by remember { mutableStateOf<SubPage>(SubPage.Main) }
     LaunchedEffect(subPage) { onSubPageChanged(subPage == SubPage.Main) }
@@ -137,6 +138,7 @@ fun SettingsScreen(
                 viewModel = viewModel,
                 listState = mainListState,
                 crownEvents = if (subPage == SubPage.Main) crownEvents else emptyFlow(),
+                onOpenTrash = onOpenTrash,
                 onOpenCrown = { subPage = SubPage.Crown },
                 onOpenTheme = { subPage = SubPage.Theme },
                 onOpenDiag = { subPage = SubPage.Diag },
@@ -253,6 +255,7 @@ private fun SettingsMain(
     viewModel: GalleryViewModel,
     listState: androidx.compose.foundation.lazy.LazyListState,
     crownEvents: Flow<Float>,
+    onOpenTrash: () -> Unit,
     onOpenCrown: () -> Unit,
     onOpenTheme: () -> Unit,
     onOpenDiag: () -> Unit,
@@ -280,6 +283,21 @@ private fun SettingsMain(
         verticalArrangement = Arrangement.spacedBy(4.dp),
         listState = listState
     ) {
+        // 最近删除入口与顶部白线之间留半个按钮高度的间隔，避免贴太近
+        item(key = "trash_top_gap") {
+            Box(Modifier.fillMaxWidth().height(27.dp))
+        }
+        // 最近删除入口：位于抽屉顶部白线下方、「设置」标题上方
+        item(key = "row_trash") {
+            SettingButton(
+                icon = Icons.Filled.RestoreFromTrash,
+                title = "最近删除",
+                subtitle = "已删除的照片在这里保留，可恢复",
+                onClick = onOpenTrash,
+                itemKey = "row_trash"
+            )
+        }
+
         item(key = "settings_title") {
             Box(Modifier.fillMaxWidth().height(26.dp).settingItem("settings_title", scale = false),
                 contentAlignment = Alignment.Center) {
@@ -691,7 +709,7 @@ private fun AboutPage(crownEvents: Flow<Float>) {
                 AboutIcon(entered = entered, index = iconIdx)
             }
             item(key = "about_name") {
-                AboutName("相册", entered = entered, index = nameIdx)
+                AboutName("edipic", entered = entered, index = nameIdx)
             }
             item(key = "about_tagline") {
                 AboutTagline("手表上的随身相册 · 由春羽开发", entered = entered, index = tagIdx)
