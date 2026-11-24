@@ -541,6 +541,7 @@ private fun CrownSettings(
 ) {
     var mode by remember { mutableStateOf(viewModel.crownMode.value) }
     var speed by remember { mutableFloatStateOf(viewModel.crownSpeed.value) }
+    var zoomInvert by remember { mutableStateOf(viewModel.zoomInvertCrown.value) }
     val debug by viewModel.crownDebug.collectAsState()
 
     fun commit() {
@@ -611,6 +612,42 @@ private fun CrownSettings(
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
                         Text("10.0x", style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
+        item(key = "crown_zoom_invert") {
+            Box(Modifier.fillMaxWidth().settingItem("crown_zoom_invert", scale = false)) {
+                Column {
+                    Text("缩放方向反转", style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.primary)
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        if (zoomInvert) "开 · 放大与缩小的表冠方向相反"
+                        else "关 · 维持当前的表冠缩放方向",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                            OptionButton(
+                                selected = !zoomInvert,
+                                label = "关（默认）",
+                                onClick = { zoomInvert = false; viewModel.setZoomInvert(false) },
+                                modifier = Modifier.fillMaxWidth().height(40.dp)
+                                    .settingItem("crown_zoom_invert_off")
+                            )
+                        }
+                        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
+                            OptionButton(
+                                selected = zoomInvert,
+                                label = "开（反转）",
+                                onClick = { zoomInvert = true; viewModel.setZoomInvert(true) },
+                                modifier = Modifier.fillMaxWidth().height(40.dp)
+                                    .settingItem("crown_zoom_invert_on")
+                            )
+                        }
                     }
                 }
             }

@@ -62,6 +62,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -388,12 +389,17 @@ fun EditScreen(
                     pan = clampPan(pan)
                 }
 
+                // 表冠缩放方向反转开关：rememberUpdatedState 保证切换后立即生效，不重启事件订阅
+                val zoomInvert by viewModel.zoomInvertCrown.collectAsState()
+                val zoomInvertRef = rememberUpdatedState(zoomInvert)
+
                 // 表冠缩放：抽屉收起时才作用在图片上（抽屉展开时表冠留给面板，避免和按钮抢手感）
                 LaunchedEffect(crownEvents) {
                     crownEvents.collect { delta ->
                         if (drawer.progress.floatValue > 0.002f) return@collect
                         if (textDrawer.progress.floatValue > 0.002f) return@collect
-                        setZoom(zoom + delta * 0.01f)
+                        val sign = if (zoomInvertRef.value) -1f else 1f
+                        setZoom(zoom + delta * 0.01f * sign)
                     }
                 }
 

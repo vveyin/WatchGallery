@@ -619,10 +619,19 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _crownSpeed = MutableStateFlow(CrownPrefs.load(app).second)
     val crownSpeed: StateFlow<Float> = _crownSpeed
 
+    /** 表冠缩放方向反转：false=现状（顺着转放大），true=方向相反。只影响缩放，不影响列表滚动。 */
+    private val _zoomInvertCrown = MutableStateFlow(CrownPrefs.loadZoomInvert(app))
+    val zoomInvertCrown: StateFlow<Boolean> = _zoomInvertCrown
+
     fun setCrownConfig(mode: CrownMode, speed: Float) {
         _crownMode.value = mode
         _crownSpeed.value = speed.coerceIn(CrownPrefs.SPEED_MIN, CrownPrefs.SPEED_MAX)
         CrownPrefs.save(getApplication(), mode, _crownSpeed.value)
+    }
+
+    fun setZoomInvert(invert: Boolean) {
+        _zoomInvertCrown.value = invert
+        CrownPrefs.saveZoomInvert(getApplication(), invert)
     }
 
     init {

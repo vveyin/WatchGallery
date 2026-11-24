@@ -12,6 +12,7 @@ object CrownPrefs {
     private const val PREF = "watch_gallery"
     private const val KEY_MODE = "crown_mode"
     private const val KEY_SPEED = "crown_speed"
+    private const val KEY_ZOOM_INVERT = "crown_zoom_invert"
 
     /** 灵敏度范围 0.1x ~ 10.0x，默认 1.0x */
     const val SPEED_MIN = 0.1f
@@ -49,6 +50,18 @@ object CrownPrefs {
         context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
             .putInt(KEY_MODE, mode.ordinal)
             .putFloat(KEY_SPEED, speed.coerceIn(SPEED_MIN, SPEED_MAX))
+            .apply()
+    }
+
+    /** 表冠缩放方向反转：关闭=false（默认，与现有逻辑一致），开启=true（放大缩小方向相反）。
+     *  独立 key，不影响 [load]/[save] 的模式与灵敏度读写。 */
+    fun loadZoomInvert(context: Context): Boolean =
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE)
+            .getBoolean(KEY_ZOOM_INVERT, false)
+
+    fun saveZoomInvert(context: Context, invert: Boolean) {
+        context.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit()
+            .putBoolean(KEY_ZOOM_INVERT, invert)
             .apply()
     }
 }

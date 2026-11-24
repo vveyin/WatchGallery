@@ -52,6 +52,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.LaunchedEffect
@@ -285,12 +286,18 @@ fun PhotoViewerScreen(
     var renameText by remember { mutableStateOf("") }
     var pendingRename by remember { mutableStateOf<Pair<Photo, String>?>(null) }
 
+    // 表冠缩放方向反转开关：用 rememberUpdatedState 让切换开关后立即生效，
+    // 不必重启下面的 LaunchedEffect（重启会丢掉正在进行的事件流订阅）。
+    val zoomInvert by viewModel.zoomInvertCrown.collectAsState()
+    val zoomInvertRef = rememberUpdatedState(zoomInvert)
+
     // 表冠缩放：逐条消费增量，避免累加值导致缩放失控。
     // 弹窗打开时表冠归弹窗用（详细信息里滚列表），这里必须让位，否则同一串事件会被用两遍。
     LaunchedEffect(crownEvents) {
         crownEvents.collect { delta ->
             if (showDetail || renameTarget != null) return@collect
-            setScale(scale + delta * 0.01f)
+            val sign = if (zoomInvertRef.value) -1f else 1f
+            setScale(scale + delta * 0.01f * sign)
         }
     }
 
