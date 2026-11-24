@@ -1,5 +1,7 @@
 package com.watchgallery.app.ui
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -27,10 +29,13 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.min
@@ -60,6 +65,12 @@ fun WatchDialog(
     scrollState: ScrollState? = null,
     body: @Composable ColumnScope.() -> Unit
 ) {
+    // 出现动画：面板从 0.82 倍放大 + 淡入，避免命名框硬弹出。
+    val enter = remember { Animatable(0f) }
+    LaunchedEffect(Unit) {
+        enter.animateTo(1f, animationSpec = spring(dampingRatio = 0.8f, stiffness = 320f))
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -75,10 +86,15 @@ fun WatchDialog(
             val side = min(maxWidth, maxHeight) * 0.70f
             val ownScroll = rememberScrollState()
             val bodyScroll = scrollState ?: ownScroll
+            val scale = 0.82f + 0.18f * enter.value
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.size(side)
+                modifier = Modifier.size(side).graphicsLayer {
+                    alpha = enter.value
+                    scaleX = scale
+                    scaleY = scale
+                }
             ) {
                 Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
                     if (title != null) {
