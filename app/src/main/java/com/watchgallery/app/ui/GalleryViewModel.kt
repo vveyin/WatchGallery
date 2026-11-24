@@ -110,6 +110,40 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         setFolderHidden(path, path !in _hiddenFolders.value)
     }
 
+    // ── 应用内创建的文件夹 ──
+    /**
+     * 应用内创建的文件夹相对路径集合。文件夹视图只从「有照片的目录」派生条目，
+     * 空目录不会出现；这里单独记录应用创建的空文件夹，合并进列表，且只有这些
+     * 文件夹允许长按删除（系统自带的有照片目录不允许删）。
+     */
+    private val _createdFolders = MutableStateFlow(
+        prefs.getStringSet("created_folders", emptySet())?.toSet() ?: emptySet()
+    )
+    val createdFolders: StateFlow<Set<String>> = _createdFolders
+
+    /** 创建一个空文件夹；返回其相对路径，重名或非法名返回 null */
+    fun createFolder(name: String): String? {
+        val path = repo.createUserFolderDir(name) ?: return null
+        if (path in _createdFolders.value || path in allFolders.value.map { it.path }) return null
+        val next = _createdFolders.value + path
+        _createdFolders.value = next
+        prefs.edit().putStringSet("created_folders", HashSet(next)).apply()
+        return path
+    }
+
+    /** 仅删除应用内创建的文件夹（系统自带目录不允许删） */
+    fun deleteCreatedFolder(path: String) {
+        if (path !in _createdFolders.value) return
+        val next = _createdFolders.value - path
+        _createdFolders.value = next
+        prefs.edit().putStringSet("created_folders", HashSet(next)).apply()
+        repo.deleteUserFolderDir(path)
+        if (_openFolder.value == path) _openFolder.value = null
+    }
+
+    /** 某个文件夹是否是应用内创建的（可删除） */
+    fun isCreatedFolder(path: String): Boolean = path in _createdFolders.value
+
     /** 隐藏过滤后的全部照片：两种浏览方式、大图翻页、文件夹树都基于它 */
     private val visiblePhotos: StateFlow<List<Photo>> =
         combine(_allPhotos, _hiddenFolders) { list, hidden ->
@@ -127,9 +161,24 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     val totalCountFlow: StateFlow<Int> =
         visiblePhotos.map { it.size }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
 
-    /** 文件夹视图：只含「直接有图片」的文件夹（已过滤隐藏） */
+    /** 文件夹视图：含「直接有图片」的文件夹 + 应用内创建的空文件夹（已过滤隐藏） */
     val folders: StateFlow<List<FolderEntry>> =
-        visiblePhotos.map { buildFolders(it) }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
+        combine(visiblePhotos, _createdFolders) { list, created ->
+            val base = buildFolders(list)
+            val photoPaths = base.map { it.path }.toSet()
+            // 应用创建的空文件夹按路径补条目；有照片时以照片派生条目为准（带封面/张数）
+            val extras = created.filter { it !in photoPaths && !isFolderHidden(it, _hiddenFolders.value) }
+                .map { path ->
+                    val segs = path.split('/').filter { it.isNotBlank() }
+                    FolderEntry(
+                        path = path,
+                        name = segs.lastOrNull() ?: path,
+                        parentPath = segs.dropLast(1).joinToString("/"),
+                        photos = emptyList()
+                    )
+                }
+            (base + extras).sortedWith(compareByDescending<FolderEntry> { it.count }.thenBy { it.path })
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** 所有识别到有图片的文件夹（包含已被隐藏的，供设置里取消隐藏） */
     val allFolders: StateFlow<List<FolderEntry>> =

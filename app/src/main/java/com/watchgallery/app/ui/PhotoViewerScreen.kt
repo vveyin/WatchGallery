@@ -860,8 +860,10 @@ private fun PhotoDetailDialog(
  * 用户点一下输入框再调起；输入法上的确认键也不提交，只认面板里的「确定」。
  */
 @Composable
-private fun RenameDialog(
+internal fun RenameDialog(
     initial: String,
+    title: String = "重命名",
+    confirmLabel: String = "确定",
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit
 ) {
@@ -871,9 +873,9 @@ private fun RenameDialog(
 
     WatchDialog(
         onDismiss = onDismiss,
-        title = "重命名",
+        title = title,
         cancelLabel = "取消",
-        confirmLabel = "确定",
+        confirmLabel = confirmLabel,
         confirmEnabled = text.isNotBlank(),
         onCancel = {
             keyboard?.hide()

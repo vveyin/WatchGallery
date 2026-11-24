@@ -142,6 +142,32 @@ class MediaRepository(private val context: Context) {
     private val importedDir: File
         get() = File(context.filesDir, "imported").apply { if (!exists()) mkdirs() }
 
+    /**
+     * 应用内创建文件夹：按名字在 Pictures 下建目录，返回规范化相对路径（如 `Pictures/旅行`）。
+     *
+     * 物理目录创建只是 best-effort：手表 ROM 的 scoped storage 可能拒绝直接写公共目录。
+     * 文件夹条目本身由 SharedPreferences 记录（见 GalleryViewModel.userFolders），
+     * 所以即使这里失败，列表里依然能显示 / 删除这个文件夹。
+     */
+    fun createUserFolderDir(name: String): String? {
+        val safe = name.trim().replace('/', '_').replace('\\', '_').trim('.')
+        if (safe.isBlank()) return null
+        val rel = "Pictures/$safe"
+        runCatching {
+            val dir = File(Environment.getExternalStorageDirectory(), rel)
+            if (!dir.exists()) dir.mkdirs()
+        }
+        return rel
+    }
+
+    /** 删除应用内创建的目录（best-effort）。非空目录 delete() 会失败，正好保护里面有照片的情况。 */
+    fun deleteUserFolderDir(path: String) {
+        runCatching {
+            val dir = File(Environment.getExternalStorageDirectory(), path)
+            if (dir.exists() && dir.isDirectory) dir.delete()
+        }
+    }
+
     suspend fun scan(): ScanResult = withContext(Dispatchers.IO) {
         val errors = mutableListOf<String>()
         val collected = LinkedHashMap<String, Photo>()

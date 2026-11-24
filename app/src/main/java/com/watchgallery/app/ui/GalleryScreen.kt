@@ -27,6 +27,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -139,6 +140,11 @@ fun GalleryScreen(
     var permissionGranted by remember { mutableStateOf(hasMediaPermission(context)) }
     var needSettings by remember { mutableStateOf(false) }
     var hint by remember { mutableStateOf<String?>(null) }
+    val createdFolders by viewModel.createdFolders.collectAsState()
+
+    // ── 创建 / 删除文件夹弹窗 ──
+    var showCreateFolder by remember { mutableStateOf(false) }
+    var pendingDeleteFolder by remember { mutableStateOf<FolderEntry?>(null) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -225,8 +231,11 @@ fun GalleryScreen(
                         Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
                             FolderList(
                                 folders = folders,
+                                createdFolders = createdFolders,
                                 crownEvents = emptyFlow(),
-                                onOpen = { viewModel.openFolder(it.path) }
+                                onOpen = { viewModel.openFolder(it.path) },
+                                onCreateFolder = { showCreateFolder = true },
+                                onRequestDelete = { pendingDeleteFolder = it }
                             )
                         }
                     },
@@ -270,8 +279,11 @@ fun GalleryScreen(
                 // ── 文件夹视图：文件夹列表 ──
                 viewMode == GalleryViewMode.FOLDER -> FolderList(
                     folders = folders,
+                    createdFolders = createdFolders,
                     crownEvents = crownEvents,
-                    onOpen = { viewModel.openFolder(it.path) }
+                    onOpen = { viewModel.openFolder(it.path) },
+                    onCreateFolder = { showCreateFolder = true },
+                    onRequestDelete = { pendingDeleteFolder = it }
                 )
                 // ── 平铺列表 ──
                 else -> ScalingPhotoList(
@@ -318,6 +330,43 @@ fun GalleryScreen(
                 onCancel = { viewModel.exitSelectionMode() },
                 modifier = Modifier
             )
+        }
+
+        // 创建文件夹：复用重命名弹窗，只改标题 / 确认按钮文字
+        if (showCreateFolder && viewMode == GalleryViewMode.FOLDER) {
+            RenameDialog(
+                initial = "",
+                title = "创建文件夹",
+                confirmLabel = "创建",
+                onDismiss = { showCreateFolder = false },
+                onConfirm = { name ->
+                    showCreateFolder = false
+                    if (viewModel.createFolder(name) == null) {
+                        hint = "文件夹已存在或名称无效"
+                    }
+                }
+            )
+        }
+
+        // 删除文件夹：只对应用内创建的文件夹弹出确认，系统自带目录不会进到这里
+        pendingDeleteFolder?.let { target ->
+            WatchDialog(
+                onDismiss = { pendingDeleteFolder = null },
+                title = "删除文件夹",
+                cancelLabel = "取消",
+                confirmLabel = "删除",
+                onCancel = { pendingDeleteFolder = null },
+                onConfirm = {
+                    viewModel.deleteCreatedFolder(target.path)
+                    pendingDeleteFolder = null
+                }
+            ) {
+                Text(
+                    "确定删除文件夹「${target.name}」吗？\n只删除这个空文件夹，不会删除照片。",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+            }
         }
     }
 }
@@ -1097,43 +1146,80 @@ private fun SelectionBar(
 }
 
 /** 文件夹列表：一条 = 一个「直接含有图片」的文件夹，点子目录会作为独立条目并列显示 */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FolderList(
     folders: List<FolderEntry>,
+    createdFolders: Set<String>,
     crownEvents: Flow<Float>,
-    onOpen: (FolderEntry) -> Unit
+    onOpen: (FolderEntry) -> Unit,
+    onCreateFolder: () -> Unit,
+    onRequestDelete: (FolderEntry) -> Unit
 ) {
     if (folders.isEmpty()) {
-        FolderHint("没有可显示的文件夹\n可能都在设置里被隐藏了")
+        // 空列表也要能创建文件夹：给一个带「+」的入口
+        Box(Modifier.fillMaxSize()) {
+            FolderHint("没有可显示的文件夹\n可能都在设置里被隐藏了")
+            IconButton(
+                onClick = onCreateFolder,
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).size(40.dp)
+            ) {
+                Icon(
+                    Icons.Filled.Add, "创建文件夹",
+                    modifier = Modifier.size(26.dp),
+                    tint = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
         return
     }
     ScalingScrollColumn(crownEvents = crownEvents) {
         item(key = "folder_header") {
             Box(
-                Modifier.fillMaxWidth().height(28.dp).scalingItem("folder_header", scale = false),
-                contentAlignment = Alignment.Center
+                Modifier.fillMaxWidth().height(36.dp).scalingItem("folder_header", scale = false)
             ) {
                 Text(
                     "文件夹 · ${folders.size}",
                     style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.align(Alignment.Center)
                 )
+                // 标题右侧「+」：比正文略大，点击创建文件夹
+                IconButton(
+                    onClick = onCreateFolder,
+                    modifier = Modifier.align(Alignment.CenterEnd).size(34.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Add, "创建文件夹",
+                        modifier = Modifier.size(22.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
         folders.forEach { folder ->
             item(key = "folder_${folder.path}") {
-                FolderRow(folder, onOpen)
+                FolderRow(folder, folder.path in createdFolders, onOpen, onRequestDelete)
             }
         }
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun FolderRow(folder: FolderEntry, onOpen: (FolderEntry) -> Unit) {
+private fun FolderRow(
+    folder: FolderEntry,
+    deletable: Boolean,
+    onOpen: (FolderEntry) -> Unit,
+    onRequestDelete: (FolderEntry) -> Unit
+) {
     val itemKey = "folder_${folder.path}"
     Surface(
-        onClick = { onOpen(folder) },
-        modifier = Modifier.fillMaxWidth().height(56.dp).scalingItem(itemKey),
+        modifier = Modifier.fillMaxWidth().height(56.dp).scalingItem(itemKey)
+            .combinedClickable(
+                onClick = { onOpen(folder) },
+                onLongClick = if (deletable) ({ onRequestDelete(folder) }) else null
+            ),
         shape = RoundedCornerShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceVariant
     ) {
