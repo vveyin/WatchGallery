@@ -74,6 +74,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
@@ -731,6 +732,13 @@ internal fun ScalingPhotoList(
     }
     val layoutColumns by remember { derivedStateOf { ceil(displayColumns.floatValue).toInt().coerceIn(2, 10) } }
 
+    // 卡片圆角随视觉列数等比缩放：单元格宽度 ∝ 1/displayColumns，圆角按相同比例变化，
+    // 于是整个卡片轮廓（含圆角）看起来是等比例放大/缩小的，而不是图变小了圆角却不变。
+    // 基准取默认 2 列时为 14.dp；2~10 列对应圆角 14dp→2.8dp。
+    // 必须用固定基准 2（而非当前持久列数 columns），否则松手吸附后 columns 更新会让
+    // 圆角突然跳变；固定基准下 displayColumns 连续变化，圆角全程连续。
+    val cardCornerRadius: Dp = 14.dp * (2f / displayColumns.floatValue)
+
     // 多选慢速拖动产生的滚动增量：手势回调处在受限协程作用域，不能直接调用
     // gridState.scroll{}，故把增量投递到普通协程里再执行滚动。
     val selectionScroll = remember {
@@ -1033,7 +1041,7 @@ internal fun ScalingPhotoList(
                                 }
                         )
                 ) {
-                    PhotoCard(photo, showNames, thumbPainter)
+                    PhotoCard(photo, showNames, thumbPainter, cardCornerRadius)
                     // 长按进入多选后出现的复选圈：从右上角「弹」出来，不是硬冒出来
                     AnimatedVisibility(
                         visible = selectionMode,
@@ -1141,11 +1149,12 @@ internal fun ScalingPhotoList(
 private fun PhotoCard(
     photo: Photo,
     showName: Boolean,
-    painter: androidx.compose.ui.graphics.painter.Painter
+    painter: androidx.compose.ui.graphics.painter.Painter,
+    cornerRadius: Dp = 14.dp
 ) {
     Card(
         modifier = Modifier.fillMaxSize(),
-        shape = RoundedCornerShape(14.dp),
+        shape = RoundedCornerShape(cornerRadius),
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
         )
