@@ -278,6 +278,7 @@ private fun SettingsMain(
     val showPhotoNames by viewModel.showPhotoNames.collectAsState()
     val showZoomButtons by viewModel.showZoomButtons.collectAsState()
     val blurBackdrop by viewModel.blurBackdrop.collectAsState()
+    val restoreKeepDate by viewModel.restoreKeepOriginalDate.collectAsState()
     val animateGifs by viewModel.animateGifs.collectAsState()
     val blockGestures by viewModel.blockGestures.collectAsState()
     val screenShape by viewModel.screenShape.collectAsState()
@@ -452,6 +453,16 @@ private fun SettingsMain(
 
         // ───────────────── 3. 其他功能 ─────────────────
         item(key = "sec_other") { SectionHeader("其他功能", "sec_other") }
+        item(key = "row_restore_date") {
+            SettingButton(
+                icon = Icons.Filled.DateRange,
+                title = "恢复图片保留原日期",
+                subtitle = if (restoreKeepDate) "开 · 从最近删除恢复后保持原来的日期"
+                else "关 · 恢复后日期变为恢复时间",
+                onClick = { viewModel.setRestoreKeepOriginalDate(!restoreKeepDate) },
+                itemKey = "row_restore_date"
+            )
+        }
         item(key = "row_diag") {
             SettingButton(
                 icon = Icons.Filled.Search,

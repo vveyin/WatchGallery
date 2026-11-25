@@ -172,7 +172,7 @@ class TrashRepository(private val context: Context) {
      * **不在这里写 entries** —— 批量恢复时由 [restoreBatch] 统一写一次，
      * 避免多协程并发「读-改-写」SharedPreferences 互相覆盖（底部几张恢复不掉的元凶）。
      */
-    private fun restoreOne(photo: Photo): String? {
+    private fun restoreOne(photo: Photo, keepOriginalDate: Boolean): String? {
         val entry = findEntry(photo) ?: return null
         val backup = File(trashDir, entry.backupName)
         if (!backup.exists()) return null
@@ -183,8 +183,9 @@ class TrashRepository(private val context: Context) {
                 val name = "RESTORE_${stamp}_${entry.displayName}"
                 val target = File(importedDir, name)
                 backup.inputStream().use { input -> target.outputStream().use { input.copyTo(it) } }
-                // 导入目录按 lastModified 排序，写回原图时间才能保持原来的顺序
-                if (entry.originalDateAdded > 0) {
+                // 导入目录按 lastModified 排序：开「保留原日期」才写回原图时间保持原来的顺序；
+                // 关掉则不写，文件保持 newFile 的当前时间（= 恢复时间）。
+                if (keepOriginalDate && entry.originalDateAdded > 0) {
                     runCatching { target.setLastModified(entry.originalDateAdded * 1000L) }
                 }
                 runCatching {
@@ -192,7 +193,7 @@ class TrashRepository(private val context: Context) {
                 }
                 true
             } else {
-                insertToMediaStore(entry, backup) != null
+                insertToMediaStore(entry, backup, keepOriginalDate) != null
             }
             if (ok) {
                 runCatching { backup.delete() }
@@ -204,8 +205,8 @@ class TrashRepository(private val context: Context) {
     }
 
     /** 恢复单张（外部单张入口） */
-    suspend fun restore(photo: Photo): Boolean = withContext(Dispatchers.IO) {
-        val name = restoreOne(photo)
+    suspend fun restore(photo: Photo, keepOriginalDate: Boolean = true): Boolean = withContext(Dispatchers.IO) {
+        val name = restoreOne(photo, keepOriginalDate)
         if (name != null) saveEntries(loadEntries().filterNot { it.backupName == name })
         name != null
     }
@@ -215,11 +216,11 @@ class TrashRepository(private val context: Context) {
      * 既消除了并发覆盖，也保证「恢复顺序」不会变成相册里的排序（每张都写回原时间）。
      * @return 成功恢复的张数
      */
-    suspend fun restoreBatch(photos: List<Photo>): Int = withContext(Dispatchers.IO) {
+    suspend fun restoreBatch(photos: List<Photo>, keepOriginalDate: Boolean = true): Int = withContext(Dispatchers.IO) {
         if (photos.isEmpty()) return@withContext 0
         val restoredNames = HashSet<String>()
         for (photo in photos) {
-            restoreOne(photo)?.let { restoredNames += it }
+            restoreOne(photo, keepOriginalDate)?.let { restoredNames += it }
         }
         if (restoredNames.isNotEmpty()) {
             saveEntries(loadEntries().filterNot { it.backupName in restoredNames })
@@ -227,13 +228,13 @@ class TrashRepository(private val context: Context) {
         restoredNames.size
     }
 
-    private fun insertToMediaStore(entry: TrashEntry, backup: File): Uri? {
+    private fun insertToMediaStore(entry: TrashEntry, backup: File, keepOriginalDate: Boolean): Uri? {
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "RESTORE_${entry.displayName}")
             put(MediaStore.Images.Media.MIME_TYPE, entry.mimeType)
-            // 写回原图时间（秒），相册按 DATE_ADDED 倒序排，恢复后就回到原来的时间位置，
-            // 而不是按恢复顺序堆在最前面。
-            if (entry.originalDateAdded > 0) {
+            // 开「保留原日期」时写回原图时间（秒），相册按 DATE_ADDED 倒序排，恢复后回到原来的时间位置；
+            // 关掉时不写这两个字段，让 MediaStore 用当前时间（= 恢复时间）。
+            if (keepOriginalDate && entry.originalDateAdded > 0) {
                 put(MediaStore.Images.Media.DATE_ADDED, entry.originalDateAdded)
                 put(MediaStore.Images.Media.DATE_MODIFIED, entry.originalDateAdded)
             }

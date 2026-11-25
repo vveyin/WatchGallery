@@ -408,6 +408,18 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         trashRepo.saveKeepDays(days)
     }
 
+    /**
+     * 从最近删除恢复图片时是否保留原来的拍摄日期，默认开（保持原有行为）。
+     * 关掉后恢复的图片日期改为恢复当时的时间。
+     */
+    private val _restoreKeepOriginalDate = MutableStateFlow(prefs.getBoolean("restore_keep_date", true))
+    val restoreKeepOriginalDate: StateFlow<Boolean> = _restoreKeepOriginalDate
+
+    fun setRestoreKeepOriginalDate(on: Boolean) {
+        _restoreKeepOriginalDate.value = on
+        prefs.edit().putBoolean("restore_keep_date", on).apply()
+    }
+
     /** 进入最近删除页时刷新（顺带按保留时长清理过期项） */
     fun refreshTrash() {
         viewModelScope.launch {
@@ -418,7 +430,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun restoreTrash(photo: Photo) {
         viewModelScope.launch {
-            val ok = trashRepo.restore(photo)
+            val ok = trashRepo.restore(photo, _restoreKeepOriginalDate.value)
             _message.value = if (ok) "已恢复到原目录" else "恢复失败"
             if (ok) {
                 refreshTrash()
@@ -431,7 +443,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     fun restoreTrashBatch(photos: List<Photo>) {
         if (photos.isEmpty()) return
         viewModelScope.launch {
-            val n = trashRepo.restoreBatch(photos)
+            val n = trashRepo.restoreBatch(photos, _restoreKeepOriginalDate.value)
             _message.value = if (n > 0) "已恢复 $n 张到原目录" else "恢复失败"
             if (n > 0) {
                 refreshTrash()
