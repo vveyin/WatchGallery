@@ -481,7 +481,14 @@ private fun AppNavigation(
                 )
                 is Screen.Viewer -> {
                     val viewerList = viewerPhotos ?: photos
-                    val idx = viewerList.indexOfFirst { it.uri == currentPhoto?.uri }.coerceAtLeast(0)
+                    // 定位点开的那张：先按 uri；恢复图跨卷扫描后 uri 可能换卷而变，
+                    // 再按 media id 兜底，避免定位失败被 coerceAtLeast(0) 顶到第一张、
+                    // 看起来像「点这张没反应 / 打开了别的图」。
+                    val cp = currentPhoto
+                    val byUri = if (cp != null) viewerList.indexOfFirst { it.uri == cp.uri } else -1
+                    val idx = (if (byUri >= 0) byUri
+                               else if (cp != null) viewerList.indexOfFirst { it.id == cp.id }
+                               else -1).coerceAtLeast(0)
                     PhotoViewerScreen(
                         viewModel = viewModel,
                         photos = viewerList,

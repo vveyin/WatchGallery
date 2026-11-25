@@ -342,6 +342,11 @@ class MediaRepository(private val context: Context) {
                         if (!seen.add(uri.toString())) continue
                         var date = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
                         if (date == 0L && modCol >= 0) date = cursor.getLong(modCol)
+                        // 恢复图：系统 DATE_ADDED 是只读的、被强制设成恢复时间。
+                        // 若这张 id 在「恢复日期映射表」里，用原图拍摄日期覆盖，
+                        // 让相册排序、日期分组、详细信息都回到原来的时间位置。
+                        val restored = RestoreDateStore.get(context, id)
+                        if (restored > 0L) date = restored
                         val bucket = if (bucketCol >= 0) cursor.getString(bucketCol) ?: "其他" else "其他"
                         out.add(
                             Photo(

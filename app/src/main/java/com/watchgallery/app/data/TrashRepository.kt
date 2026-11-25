@@ -1,5 +1,6 @@
 package com.watchgallery.app.data
 
+import android.content.ContentUris
 import android.content.ContentValues
 import android.content.Context
 import android.media.MediaScannerConnection
@@ -232,12 +233,14 @@ class TrashRepository(private val context: Context) {
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, "RESTORE_${entry.displayName}")
             put(MediaStore.Images.Media.MIME_TYPE, entry.mimeType)
-            // 开「保留原日期」时写回原图时间（秒），相册按 DATE_ADDED 倒序排，恢复后回到原来的时间位置；
-            // 关掉时不写这两个字段，让 MediaStore 用当前时间（= 恢复时间）。
-            if (keepOriginalDate && entry.originalDateAdded > 0) {
-                put(MediaStore.Images.Media.DATE_ADDED, entry.originalDateAdded)
-                put(MediaStore.Images.Media.DATE_MODIFIED, entry.originalDateAdded)
-            }
+            // 写回宽高：不写的话刚恢复时 MediaStore 的 WIDTH/HEIGHT 是 0，
+            // 大图页按 0 尺寸解码/定位会异常（点进去一片空白或显示错位），这是恢复图点不开的根因之一。
+            if (entry.width > 0) put(MediaStore.Images.Media.WIDTH, entry.width)
+            if (entry.height > 0) put(MediaStore.Images.Media.HEIGHT, entry.height)
+            // 注意：Android 10+ 的 DATE_ADDED/DATE_MODIFIED 是系统只读字段，
+            // insert 时写入会被强制覆盖成当前时间，写了也没用。
+            // 真正的「保留原日期」在下面 insert 成功后用 RestoreDateStore 按 mediaId 记录，
+            // 再由 MediaRepository 扫描时覆盖 dateAdded。
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 val rel = if (entry.originalFolder.isBlank()) {
                     "${Environment.DIRECTORY_PICTURES}/WatchGallery"
@@ -262,6 +265,10 @@ class TrashRepository(private val context: Context) {
                     null, null
                 )
             }
+            // 记录/清除恢复图日期映射：开保留原日期 → 记原图时间；关 → 清掉，沿用系统当前时间。
+            val newId = ContentUris.parseId(uri)
+            if (keepOriginalDate) RestoreDateStore.put(context, newId, entry.originalDateAdded)
+            else RestoreDateStore.remove(context, newId)
             uri
         } catch (_: Exception) {
             runCatching { resolver.delete(uri, null, null) }
