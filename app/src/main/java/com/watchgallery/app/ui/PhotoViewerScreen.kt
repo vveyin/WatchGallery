@@ -41,6 +41,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DriveFileRenameOutline
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.RestoreFromTrash
 import androidx.compose.material.icons.filled.ZoomIn
 import androidx.compose.material.icons.filled.ZoomOut
 import androidx.compose.material3.Button
@@ -136,12 +137,32 @@ fun PhotoViewerScreen(
     origin: Rect? = null,
     thumb: androidx.compose.ui.graphics.painter.Painter? = null,
     blurEnabled: Boolean = true,
+    focusPhoto: Photo? = null,
+    isTrash: Boolean = false,
     onBack: () -> Unit,
     onEdit: (Photo) -> Unit,
-    onDelete: (Photo) -> Unit = {}
+    onDelete: (Photo) -> Unit = {},
+    onRestore: (Photo) -> Unit = {}
 ) {
     var index by remember {
         mutableIntStateOf(initialIndex.coerceIn(0, (photos.size - 1).coerceAtLeast(0)))
+    }
+
+    // 恢复图等异步刷新场景：点进来那一帧列表可能还没刷新到位，initialIndex 会算错
+    // （indexOfFirst 找不到 → 被顶到 0）并被 remember 锁死，之后列表补齐也不纠正，
+    // 表现就是「点这张打不开 / 打开的是别的图」，而杀后台重进因数据一次就绪就正常。
+    // 这里在列表就绪后按 focusPhoto 重新定位一次，找到后才锁定；找到之前持续重试，
+    // 锁定之后用户翻页不再被拉回。
+    var located by remember { mutableStateOf(focusPhoto == null) }
+    LaunchedEffect(photos, focusPhoto) {
+        if (located || focusPhoto == null) return@LaunchedEffect
+        val target = photos.indexOfFirst { it.uri == focusPhoto.uri }
+            .takeIf { it >= 0 }
+            ?: photos.indexOfFirst { it.id == focusPhoto.id }
+        if (target >= 0 && target < photos.size) {
+            index = target
+            located = true
+        }
     }
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -658,39 +679,35 @@ fun PhotoViewerScreen(
             }
 
             // ── 抽屉面板：整屏高，靠 translationY 升降，自身透明（玻璃板）──
+            // 拖拽只挂在顶部把手上（设置抽屉同款），下面的操作做成一个列表：
+            // 这样未来加功能直接往下加 item、超出一屏能滚动，且列表滚动不与抽屉拖拽抢手势。
             Surface(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .height(with(density) { screenH.toDp() })
-                    .graphicsLayer { translationY = (1f - drawer.progress.floatValue) * screenH }
-                    // 整块面板都能上下拖；轻点不消费，留给里面的按钮
-                    .pointerInput(Unit) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            awaitDrawerDrag(
-                                state = drawer,
-                                down = down,
-                                travelPx = screenH,
-                                slopPx = with(density) { 8.dp.toPx() }
-                            )
-                        }
-                    },
+                    .graphicsLayer { translationY = (1f - drawer.progress.floatValue) * screenH },
                 color = if (blurEnabled) Color.Transparent else MaterialTheme.colorScheme.surface,
                 tonalElevation = 0.dp,
                 shape = RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
             ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 14.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally
-                ) {
-                    // 把手贴着面板顶边
+                Column(modifier = Modifier.fillMaxSize()) {
+                    // 顶部把手：下滑收起抽屉
                     Box(
                         Modifier
                             .fillMaxWidth()
-                            .height(26.dp),
+                            .height(30.dp)
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    awaitDrawerDrag(
+                                        state = drawer,
+                                        down = down,
+                                        travelPx = screenH,
+                                        slopPx = with(density) { 8.dp.toPx() }
+                                    )
+                                }
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         Box(
@@ -712,78 +729,110 @@ fun PhotoViewerScreen(
                         textAlign = TextAlign.Center,
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(bottom = 6.dp)
+                            .padding(start = 14.dp, end = 14.dp, bottom = 6.dp)
                     )
 
-                    Spacer(Modifier.weight(1f))
-
-                    Button(
-                        onClick = {
-                            drawer.close()
-                            onEdit(photo)
-                        },
-                        modifier = Modifier
-                            .widthIn(min = 118.dp)
-                            .height(38.dp),
-                        contentPadding = PaddingValues(horizontal = 14.dp)
+                    // ── 操作项列表：未来加功能往下加 item 即可，超出一屏可滚动 ──
+                    ScalingScrollColumn(
+                        crownEvents = emptyFlow(),
+                        modifier = Modifier.weight(1f),
+                        contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
                     ) {
-                        Icon(Icons.Filled.Edit, null, modifier = Modifier.size(15.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("编辑", style = MaterialTheme.typography.labelLarge)
+                        item(key = "viewer_edit") {
+                            Button(
+                                onClick = {
+                                    drawer.close()
+                                    onEdit(photo)
+                                },
+                                modifier = Modifier
+                                    .widthIn(min = 118.dp)
+                                    .height(38.dp),
+                                contentPadding = PaddingValues(horizontal = 14.dp)
+                            ) {
+                                Icon(Icons.Filled.Edit, null, modifier = Modifier.size(15.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("编辑", style = MaterialTheme.typography.labelLarge)
+                            }
+                        }
+
+                        item(key = "viewer_detail") {
+                            OutlinedButton(
+                                onClick = { showDetail = true },
+                                modifier = Modifier
+                                    .widthIn(min = 118.dp)
+                                    .height(34.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp)
+                            ) {
+                                Icon(Icons.Filled.Info, null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("详细信息", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+
+                        item(key = "viewer_rename") {
+                            OutlinedButton(
+                                onClick = {
+                                    renameText = photo.displayName.substringBeforeLast('.')
+                                    renameTarget = photo
+                                },
+                                modifier = Modifier
+                                    .widthIn(min = 118.dp)
+                                    .height(34.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp)
+                            ) {
+                                Icon(
+                                    Icons.Filled.DriveFileRenameOutline, null,
+                                    modifier = Modifier.size(14.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("重命名", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
+
+                        // 最近删除查看大图：删除键上方加「恢复」
+                        if (isTrash) {
+                            item(key = "viewer_restore") {
+                                OutlinedButton(
+                                    onClick = {
+                                        drawer.close()
+                                        onRestore(photo)
+                                    },
+                                    modifier = Modifier
+                                        .widthIn(min = 118.dp)
+                                        .height(34.dp),
+                                    contentPadding = PaddingValues(horizontal = 12.dp),
+                                    colors = ButtonDefaults.outlinedButtonColors(
+                                        contentColor = MaterialTheme.colorScheme.primary
+                                    )
+                                ) {
+                                    Icon(
+                                        Icons.Filled.RestoreFromTrash, null,
+                                        modifier = Modifier.size(14.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("恢复", style = MaterialTheme.typography.labelMedium)
+                                }
+                            }
+                        }
+
+                        item(key = "viewer_delete") {
+                            OutlinedButton(
+                                onClick = { onDelete(photo) },
+                                modifier = Modifier
+                                    .widthIn(min = 118.dp)
+                                    .height(34.dp),
+                                contentPadding = PaddingValues(horizontal = 12.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.error
+                                )
+                            ) {
+                                Icon(Icons.Filled.Delete, null, modifier = Modifier.size(14.dp))
+                                Spacer(Modifier.width(6.dp))
+                                Text("删除", style = MaterialTheme.typography.labelMedium)
+                            }
+                        }
                     }
-
-                    Spacer(Modifier.height(7.dp))
-
-                    OutlinedButton(
-                        onClick = { showDetail = true },
-                        modifier = Modifier
-                            .widthIn(min = 118.dp)
-                            .height(34.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp)
-                    ) {
-                        Icon(Icons.Filled.Info, null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("详细信息", style = MaterialTheme.typography.labelMedium)
-                    }
-
-                    Spacer(Modifier.height(7.dp))
-
-                    OutlinedButton(
-                        onClick = {
-                            renameText = photo.displayName.substringBeforeLast('.')
-                            renameTarget = photo
-                        },
-                        modifier = Modifier
-                            .widthIn(min = 118.dp)
-                            .height(34.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp)
-                    ) {
-                        Icon(
-                            Icons.Filled.DriveFileRenameOutline, null,
-                            modifier = Modifier.size(14.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text("重命名", style = MaterialTheme.typography.labelMedium)
-                    }
-
-                    Spacer(Modifier.height(7.dp))
-
-                    OutlinedButton(
-                        onClick = { onDelete(photo) },
-                        modifier = Modifier
-                            .widthIn(min = 118.dp)
-                            .height(34.dp),
-                        contentPadding = PaddingValues(horizontal = 12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(
-                            contentColor = MaterialTheme.colorScheme.error
-                        )
-                    ) {
-                        Icon(Icons.Filled.Delete, null, modifier = Modifier.size(14.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("删除", style = MaterialTheme.typography.labelMedium)
-                    }
-
-                    Spacer(Modifier.weight(1f))
                 }
             }
 

@@ -35,6 +35,8 @@ import kotlin.math.abs
 @Composable
 fun ScalingScrollColumn(
     crownEvents: Flow<Float>,
+    // 外部可传 weight 等约束（如看图抽屉把列表放进 Column 并占剩余高度）；默认填满
+    modifier: Modifier = Modifier,
     // 顶部只留 20dp：列表停在顶部时，标题就贴在抽屉那条白线下面
     // （以前上下都留 76dp，标题被顶到屏幕中上部，白线和标题之间空一大块）。
     // 底部保留 76dp，最后一条才能滚到屏幕中间。
@@ -55,9 +57,10 @@ fun ScalingScrollColumn(
     CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.then(Modifier.fillMaxSize()),
         contentPadding = contentPadding,
-        verticalArrangement = verticalArrangement
+        verticalArrangement = verticalArrangement,
+        horizontalAlignment = androidx.compose.ui.Alignment.CenterHorizontally
     ) {
         content()
     }

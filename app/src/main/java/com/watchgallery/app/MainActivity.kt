@@ -499,12 +499,21 @@ private fun AppNavigation(
                         origin = viewerOrigin,
                         thumb = viewerThumb,
                         blurEnabled = blurBackdrop,
+                        // 传入「点进来的那张」：列表异步刷新后据此重新定位，修复恢复图点不开
+                        focusPhoto = cp,
+                        isTrash = viewerUnder is Screen.Trash,
                         onBack = { if (interactive) goBack() },
                         onEdit = { photo ->
                             if (interactive) { currentPhoto = photo; navigate(Screen.Editor) }
                         },
                         onDelete = { photo ->
                             if (interactive) viewModel.deleteOneFromViewer(photo)
+                        },
+                        onRestore = { photo ->
+                            if (interactive) {
+                                viewModel.restoreTrash(photo)
+                                goBack()   // 恢复后退回最近删除，列表由 refreshTrash 刷新
+                            }
                         }
                     )
                 }

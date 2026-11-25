@@ -84,6 +84,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.rememberAsyncImagePainter
 import com.watchgallery.app.data.FolderEntry
 import com.watchgallery.app.data.Photo
+import com.watchgallery.app.theme.AppColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.launch
@@ -97,7 +98,6 @@ import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.abs
 import kotlin.math.ceil
-import kotlin.math.roundToInt
 
 /**
  * 多选手势方向判定的最小位移（px）：离开起点超过这个距离才判定方向，
@@ -629,7 +629,8 @@ private fun DateHeader(
  * - 单指事件一律放行：网格滚动、单击看大图、长按多选都不受影响。
  * - 一旦检测到第二根手指按下，立即接管：把整串事件 consume 掉，网格不再滚动。
  * - 张开 → 列数减少（图变大），捏合 → 列数增加（图变小），范围 1~10。
- * - 松手后把小数列数平滑吸附到最近整数，并回写持久化。
+ * - 松手后按「视觉列数」吸附（向上取整）：屏幕上看着是几列，松手就停在几列，
+ *   不再四舍五入（那样捏到看着 3 列却弹回 2 列），并回写持久化。
  */
 private fun Modifier.pointerPinchColumns(
     enabled: Boolean,
@@ -654,7 +655,9 @@ private fun Modifier.pointerPinchColumns(
                 if (zoomStarted) {
                     pinching.value = false
                     val from = displayColumns.floatValue
-                    val target = from.roundToInt().coerceIn(1, 10)
+                    // 视觉列数 = ceil(displayColumns)（网格就是按 ceil 排的），
+                    // 松手吸附到视觉列数：看着是 3 列就停 3 列，不再四舍五入弹回 2 列。
+                    val target = ceil(from).toInt().coerceIn(1, 10)
                     scope.launch {
                         animate(
                             initialValue = from,
@@ -1282,14 +1285,16 @@ private fun FolderList(
         // 空列表也要能创建文件夹：给一个带「+」的入口
         Box(Modifier.fillMaxSize()) {
             FolderHint("没有可显示的文件夹\n可能都在设置里被隐藏了")
-            val purple = Color(0xFF9C27B0)
             Box(
                 modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)
-                    .size(40.dp).border(2.dp, purple, CircleShape).clip(CircleShape)
+                    .size(40.dp).clip(CircleShape)
                     .clickable(onClick = onCreateFolder),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Filled.Add, "创建文件夹", modifier = Modifier.size(24.dp), tint = purple)
+                Icon(
+                    Icons.Filled.Add, "创建文件夹",
+                    modifier = Modifier.size(28.dp), tint = AppColors.Primary
+                )
             }
         }
         return
@@ -1301,20 +1306,18 @@ private fun FolderList(
             ) {
                 // 标题右侧「+」：比正文略大，点击创建文件夹
                 val addButton: @Composable () -> Unit = {
-                    // 紫色空心圆圈包住加号：圆内透明，只有描边和加号是紫色
-                    val purple = Color(0xFF9C27B0)
+                    // 纯加号按钮，颜色用应用主题紫
                     Box(
                         modifier = Modifier
                             .size(26.dp)
-                            .border(2.dp, purple, CircleShape)
                             .clip(CircleShape)
                             .clickable(onClick = onCreateFolder),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             Icons.Filled.Add, "创建文件夹",
-                            modifier = Modifier.size(16.dp),
-                            tint = purple
+                            modifier = Modifier.size(20.dp),
+                            tint = AppColors.Primary
                         )
                     }
                 }

@@ -205,7 +205,8 @@ fun UpdateContent(
                     icon = Icons.Filled.NewReleases,
                     title = "发现新版本 v${s.info.versionName}",
                     subtitle = "v$localVer → v${s.info.versionName}",
-                    footnote = s.info.releaseNotes.take(160).ifBlank { null }
+                    // 更新说明全部显示：外层是 ScalingScrollColumn，内容再长也能滚动看到
+                    footnote = s.info.releaseNotes.ifBlank { null }
                 )
                 is UpdateState.Downloading -> {
                     val percent = if (s.total > 0) {
