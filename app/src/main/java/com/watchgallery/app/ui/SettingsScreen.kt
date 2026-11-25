@@ -9,6 +9,7 @@ import android.os.Build
 import android.widget.Toast
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
@@ -24,6 +25,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -62,11 +64,13 @@ import com.watchgallery.app.data.CrownPrefs
 import com.watchgallery.app.data.ScreenShape
 import com.watchgallery.app.theme.ThemeMode
 import com.watchgallery.app.util.CrashLogger
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.launch
 import kotlin.math.abs
+import kotlin.math.roundToInt
 
 /**
  * 设置页 —— 全屏缩放列表（主页与所有二级菜单都有表冠滚动）。
@@ -142,6 +146,7 @@ fun SettingsScreen(
                 onOpenCrown = { subPage = SubPage.Crown },
                 onOpenTheme = { subPage = SubPage.Theme },
                 onOpenSort = { subPage = SubPage.Sort },
+                onOpenGrid = { subPage = SubPage.Grid },
                 onOpenDiag = { subPage = SubPage.Diag },
                 onOpenHidden = { subPage = SubPage.Hidden },
                 onOpenUpdate = { subPage = SubPage.Update },
@@ -224,6 +229,10 @@ fun SettingsScreen(
                         viewModel = viewModel,
                         crownEvents = crownEvents
                     )
+                    SubPage.Grid -> GridSettings(
+                        viewModel = viewModel,
+                        crownEvents = crownEvents
+                    )
                     SubPage.Diag -> ScanDiagSettings(
                         viewModel = viewModel,
                         crownEvents = crownEvents
@@ -249,6 +258,7 @@ private sealed class SubPage {
     data object Crown : SubPage()
     data object Theme : SubPage()
     data object Sort : SubPage()
+    data object Grid : SubPage()
     data object Diag : SubPage()
     data object Hidden : SubPage()
     data object Update : SubPage()
@@ -265,6 +275,7 @@ private fun SettingsMain(
     onOpenCrown: () -> Unit,
     onOpenTheme: () -> Unit,
     onOpenSort: () -> Unit,
+    onOpenGrid: () -> Unit,
     onOpenDiag: () -> Unit,
     onOpenHidden: () -> Unit,
     onOpenUpdate: () -> Unit,
@@ -401,8 +412,8 @@ private fun SettingsMain(
             SettingButton(
                 icon = Icons.Filled.GridView,
                 title = "每排照片",
-                subtitle = "$gridColumns 张 · 点击切换（也可在相册双指捏合）",
-                onClick = { viewModel.setGridColumns(if (gridColumns >= 10) 2 else gridColumns + 1) },
+                subtitle = "$gridColumns 张 · 点击进入滑动调节（也可在相册双指捏合）",
+                onClick = onOpenGrid,
                 itemKey = "row_grid"
             )
         }
@@ -723,6 +734,115 @@ private fun ThemeSettings(
                         onClick = { viewModel.setThemeMode(mode) },
                         modifier = Modifier.fillMaxWidth().height(44.dp).settingItem(mk)
                     )
+                }
+            }
+        }
+    }
+}
+
+/**
+ * 每排照片数量二级页：线性滑杆 1~10 张。
+ * 拖动过程中滑杆连续跟手、不吸附；松手后才平滑吸附到最近的整数刻度点并写回。
+ * 刻度点和当前吸附点高亮，让「整数的点」看得见。
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GridSettings(
+    viewModel: GalleryViewModel,
+    crownEvents: Flow<Float>
+) {
+    val scope = rememberCoroutineScope()
+    val columns by viewModel.gridColumns.collectAsState()
+    // 滑杆显示值：拖动时可为小数（连续），松手后动画吸附到整数
+    var sliderValue by remember { mutableFloatStateOf(columns.toFloat()) }
+    // 正在吸附的动画任务：拖动时取消它；外部改列数时若有动画在跑就不强行同步
+    var snapJob by remember { mutableStateOf<Job?>(null) }
+    LaunchedEffect(columns) {
+        if (snapJob?.isActive != true) sliderValue = columns.toFloat()
+    }
+
+    fun snapAndCommit() {
+        val target = sliderValue.roundToInt().coerceIn(1, 10)
+        snapJob = scope.launch {
+            animate(
+                initialValue = sliderValue,
+                targetValue = target.toFloat(),
+                animationSpec = tween(180, easing = FastOutSlowInEasing)
+            ) { v, _ -> sliderValue = v }
+            viewModel.setGridColumns(target)
+        }
+    }
+
+    ScalingScrollColumn(crownEvents = crownEvents) {
+        item(key = "grid_title") {
+            Box(Modifier.fillMaxWidth().height(28.dp).settingItem("grid_title", scale = false),
+                contentAlignment = Alignment.Center) {
+                Text("每排照片", style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+        item(key = "grid_desc") {
+            Box(Modifier.fillMaxWidth().settingItem("grid_desc", scale = false)) {
+                Text(
+                    "拖动滑杆选择每排显示的照片张数（1~10 张），松手后吸附到整数点。也可在相册里双指捏合调整。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+        item(key = "grid_value") {
+            Box(Modifier.fillMaxWidth().settingItem("grid_value", scale = false),
+                contentAlignment = Alignment.Center) {
+                Text(
+                    "每排 ${sliderValue.roundToInt().coerceIn(1, 10)} 张",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        }
+        item(key = "grid_slider") {
+            Box(Modifier.fillMaxWidth().settingItem("grid_slider", scale = false)) {
+                Column {
+                    Slider(
+                        value = sliderValue,
+                        valueRange = 1f..10f,
+                        // steps = 0 → 线性连续轴，拖动时不做任何吸附；吸附在松手回调里完成。
+                        // 若用 steps = 9，Material3 会在拖动中逐点吸附，不符合「不松手不吸附」。
+                        steps = 0,
+                        onValueChange = {
+                            snapJob?.cancel()
+                            sliderValue = it
+                        },
+                        onValueChangeFinished = { snapAndCommit() },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    // 1~10 整数刻度点：当前将吸附到的点高亮
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        val snapped = sliderValue.roundToInt().coerceIn(1, 10)
+                        for (n in 1..10) {
+                            Box(
+                                Modifier.size(6.dp).clip(CircleShape).background(
+                                    if (n == snapped) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.outline.copy(alpha = 0.4f)
+                                )
+                            )
+                        }
+                    }
+                    Spacer(Modifier.height(2.dp))
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text("1 张", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("10 张", style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
             }
         }

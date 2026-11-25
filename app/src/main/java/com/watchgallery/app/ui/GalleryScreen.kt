@@ -628,7 +628,7 @@ private fun DateHeader(
  *
  * - 单指事件一律放行：网格滚动、单击看大图、长按多选都不受影响。
  * - 一旦检测到第二根手指按下，立即接管：把整串事件 consume 掉，网格不再滚动。
- * - 张开 → 列数减少（图变大），捏合 → 列数增加（图变小），范围 2~10。
+ * - 张开 → 列数减少（图变大），捏合 → 列数增加（图变小），范围 1~10。
  * - 松手后把小数列数平滑吸附到最近整数，并回写持久化。
  */
 private fun Modifier.pointerPinchColumns(
@@ -654,7 +654,7 @@ private fun Modifier.pointerPinchColumns(
                 if (zoomStarted) {
                     pinching.value = false
                     val from = displayColumns.floatValue
-                    val target = from.roundToInt().coerceIn(2, 10)
+                    val target = from.roundToInt().coerceIn(1, 10)
                     scope.launch {
                         animate(
                             initialValue = from,
@@ -676,7 +676,7 @@ private fun Modifier.pointerPinchColumns(
             val dist = (pressed[0].position - pressed[1].position).getDistance().coerceAtLeast(1f)
             val ratio = dist / startDist
             // 张开 ratio>1 → 列数减少（图片变大）；捏合 ratio<1 → 列数增加
-            displayColumns.floatValue = (startColumns / ratio).coerceIn(2f, 10f)
+            displayColumns.floatValue = (startColumns / ratio).coerceIn(1f, 10f)
             // 接管这串指针：阻止 LazyGrid 把它当成滚动
             event.changes.forEach { it.consume() }
         }
@@ -730,11 +730,11 @@ internal fun ScalingPhotoList(
     LaunchedEffect(columns) {
         if (!pinching.value) displayColumns.floatValue = columns.toFloat()
     }
-    val layoutColumns by remember { derivedStateOf { ceil(displayColumns.floatValue).toInt().coerceIn(2, 10) } }
+    val layoutColumns by remember { derivedStateOf { ceil(displayColumns.floatValue).toInt().coerceIn(1, 10) } }
 
     // 卡片圆角随视觉列数等比缩放：单元格宽度 ∝ 1/displayColumns，圆角按相同比例变化，
     // 于是整个卡片轮廓（含圆角）看起来是等比例放大/缩小的，而不是图变小了圆角却不变。
-    // 基准取默认 2 列时为 14.dp；2~10 列对应圆角 14dp→2.8dp。
+    // 基准取默认 2 列时为 14.dp；1~10 列对应圆角 28dp→2.8dp。
     // 必须用固定基准 2（而非当前持久列数 columns），否则松手吸附后 columns 更新会让
     // 圆角突然跳变；固定基准下 displayColumns 连续变化，圆角全程连续。
     val cardCornerRadius: Dp = 14.dp * (2f / displayColumns.floatValue)

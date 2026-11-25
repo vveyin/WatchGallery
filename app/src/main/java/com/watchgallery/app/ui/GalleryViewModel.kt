@@ -225,14 +225,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     )
     val themeMode: StateFlow<ThemeMode> = _themeMode
 
-    /** 列表每排显示张数（2~10），默认 2；设置里切换或双指捏合都会写回，存 SharedPreferences 持久化 */
+    /** 列表每排显示张数（1~10），默认 2；设置里滑动条或双指捏合都会写回，存 SharedPreferences 持久化 */
     private val _gridColumns = MutableStateFlow(
-        prefs.getInt("grid_columns", 2).coerceIn(2, 10)
+        prefs.getInt("grid_columns", 2).coerceIn(1, 10)
     )
     val gridColumns: StateFlow<Int> = _gridColumns
 
     fun setGridColumns(columns: Int) {
-        val c = columns.coerceIn(2, 10)
+        val c = columns.coerceIn(1, 10)
         if (_gridColumns.value == c) return
         _gridColumns.value = c
         prefs.edit().putInt("grid_columns", c).apply()
