@@ -2,6 +2,7 @@ package com.watchgallery.app.ui
 
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -30,7 +31,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -65,14 +69,29 @@ fun WatchDialog(
     scrollState: ScrollState? = null,
     body: @Composable ColumnScope.() -> Unit
 ) {
-    // 出现动画：面板从 0.82 倍放大 + 淡入，避免命名框硬弹出。
+    // 出现动画：面板从 0.82 倍放大 + 淡入；关闭时反向缩小淡出，避免硬消失。
     val enter = remember { Animatable(0f) }
+    var dismissing by remember { mutableStateOf(false) }
+    val pendingClose = remember { mutableStateOf<(() -> Unit)?>(null) }
+
     LaunchedEffect(Unit) {
         enter.animateTo(1f, animationSpec = spring(dampingRatio = 0.8f, stiffness = 320f))
     }
+    // 关闭动画播完再真正执行回调（取消/确定/点外部/返回键都走这里）
+    LaunchedEffect(dismissing) {
+        if (dismissing) {
+            enter.animateTo(0f, animationSpec = tween(140))
+            pendingClose.value?.invoke()
+        }
+    }
+    fun requestClose(action: () -> Unit) {
+        if (dismissing) return
+        dismissing = true
+        pendingClose.value = action
+    }
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { requestClose(onDismiss) },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             decorFitsSystemWindows = false
@@ -120,14 +139,14 @@ fun WatchDialog(
                         ) {
                             if (cancelLabel != null) {
                                 DialogAction(cancelLabel, false, Modifier.weight(1f)) {
-                                    (onCancel ?: onDismiss)()
+                                    requestClose(onCancel ?: onDismiss)
                                 }
                             }
                             if (confirmLabel != null) {
                                 DialogAction(
                                     confirmLabel, true, Modifier.weight(1f),
                                     enabled = confirmEnabled
-                                ) { onConfirm?.invoke() ?: onDismiss() }
+                                ) { requestClose { onConfirm?.invoke() ?: onDismiss() } }
                             }
                         }
                     }

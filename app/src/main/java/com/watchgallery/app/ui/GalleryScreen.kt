@@ -233,6 +233,7 @@ fun GalleryScreen(
                                 folders = folders,
                                 createdFolders = createdFolders,
                                 crownEvents = emptyFlow(),
+                                isRound = isRound,
                                 onOpen = { viewModel.openFolder(it.path) },
                                 onCreateFolder = { showCreateFolder = true },
                                 onRequestDelete = { pendingDeleteFolder = it }
@@ -281,6 +282,7 @@ fun GalleryScreen(
                     folders = folders,
                     createdFolders = createdFolders,
                     crownEvents = crownEvents,
+                    isRound = isRound,
                     onOpen = { viewModel.openFolder(it.path) },
                     onCreateFolder = { showCreateFolder = true },
                     onRequestDelete = { pendingDeleteFolder = it }
@@ -1152,6 +1154,7 @@ private fun FolderList(
     folders: List<FolderEntry>,
     createdFolders: Set<String>,
     crownEvents: Flow<Float>,
+    isRound: Boolean,
     onOpen: (FolderEntry) -> Unit,
     onCreateFolder: () -> Unit,
     onRequestDelete: (FolderEntry) -> Unit
@@ -1178,22 +1181,41 @@ private fun FolderList(
             Box(
                 Modifier.fillMaxWidth().height(36.dp).scalingItem("folder_header", scale = false)
             ) {
-                Text(
-                    "文件夹 · ${folders.size}",
-                    style = MaterialTheme.typography.titleSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.align(Alignment.Center)
-                )
                 // 标题右侧「+」：比正文略大，点击创建文件夹
-                IconButton(
-                    onClick = onCreateFolder,
-                    modifier = Modifier.align(Alignment.CenterEnd).size(34.dp)
-                ) {
-                    Icon(
-                        Icons.Filled.Add, "创建文件夹",
-                        modifier = Modifier.size(22.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                val addButton: @Composable () -> Unit = {
+                    IconButton(
+                        onClick = onCreateFolder,
+                        modifier = Modifier.size(34.dp)
+                    ) {
+                        Icon(
+                            Icons.Filled.Add, "创建文件夹",
+                            modifier = Modifier.size(22.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+                if (isRound) {
+                    // 圆屏：标题与「+」一起居中，避免贴到右弧边被表框切掉
+                    Row(
+                        modifier = Modifier.align(Alignment.Center),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "文件夹 · ${folders.size}",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        addButton()
+                    }
+                } else {
+                    // 方屏：标题居中、「+」仍在右上角
+                    Text(
+                        "文件夹 · ${folders.size}",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.align(Alignment.Center)
                     )
+                    Box(modifier = Modifier.align(Alignment.CenterEnd)) { addButton() }
                 }
             }
         }
