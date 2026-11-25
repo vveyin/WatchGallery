@@ -533,6 +533,10 @@ private fun AppNavigation(
                     onBack = { if (interactive) onTrashBack() },
                     onOpenPhoto = { photo, all ->
                         if (interactive) {
+                            // 从回收站进看图：navigate 里 snapTo(enterWidthPx) 到 backStack.add 之间
+                            // 有一帧 current 仍是 Trash，drawerCover 会按浮层进度算出 1f 闪出一帧设置菜单。
+                            // 先压住抽屉 cover，入栈动画结束后由 popTick 之外单独放开。
+                            suppressDrawerCover = true
                             viewerPhotos = all       // 大图页翻页用回收站列表
                             viewerUnder = Screen.Trash // 退出查看器露出的底层是回收站
                             // 用回收站缩略图的锚点做放大入场动画（TrashScreen 已写入 viewModel）

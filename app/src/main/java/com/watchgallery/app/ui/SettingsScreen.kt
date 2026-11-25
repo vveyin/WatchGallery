@@ -401,8 +401,8 @@ private fun SettingsMain(
             SettingButton(
                 icon = Icons.Filled.GridView,
                 title = "每排照片",
-                subtitle = "$gridColumns 张 · 点击切换 2/3 张",
-                onClick = { viewModel.setGridColumns(if (gridColumns == 2) 3 else 2) },
+                subtitle = "$gridColumns 张 · 点击切换（也可在相册双指捏合）",
+                onClick = { viewModel.setGridColumns(if (gridColumns >= 10) 2 else gridColumns + 1) },
                 itemKey = "row_grid"
             )
         }

@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -27,12 +28,15 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyGridState
@@ -50,6 +54,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
@@ -78,7 +83,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import coil.compose.rememberAsyncImagePainter
 import com.watchgallery.app.data.FolderEntry
 import com.watchgallery.app.data.Photo
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.emptyFlow
@@ -88,6 +95,8 @@ import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
 import kotlin.math.abs
+import kotlin.math.ceil
+import kotlin.math.roundToInt
 
 /**
  * 多选手势方向判定的最小位移（px）：离开起点超过这个距离才判定方向，
@@ -136,6 +145,10 @@ fun GalleryScreen(
     val folders by viewModel.folders.collectAsState()
     val openFolder by viewModel.openFolder.collectAsState()
     val folderPhotos by viewModel.folderPhotos.collectAsState()
+
+    // 文件夹列表的滚动状态提升到父级：进入子文件夹、右滑返回时复用同一个实例，
+    // 退出子文件夹后列表仍停在原来的位置（否则新建的 LazyListState 从顶部开始）。
+    val folderListState = rememberLazyListState()
 
     var permissionGranted by remember { mutableStateOf(hasMediaPermission(context)) }
     var needSettings by remember { mutableStateOf(false) }
@@ -234,6 +247,7 @@ fun GalleryScreen(
                                 createdFolders = createdFolders,
                                 crownEvents = emptyFlow(),
                                 isRound = isRound,
+                                listState = folderListState,
                                 onOpen = { viewModel.openFolder(it.path) },
                                 onCreateFolder = { showCreateFolder = true },
                                 onRequestDelete = { pendingDeleteFolder = it }
@@ -248,6 +262,7 @@ fun GalleryScreen(
                                 ScalingPhotoList(
                                     items = folderPhotos,
                                     columns = gridColumns,
+                                    onColumnsChanged = { viewModel.setGridColumns(it) },
                                     crownEvents = crownEvents,
                                     animateGifs = animateGifs,
                                     showNames = showPhotoNames,
@@ -283,6 +298,7 @@ fun GalleryScreen(
                     createdFolders = createdFolders,
                     crownEvents = crownEvents,
                     isRound = isRound,
+                    listState = folderListState,
                     onOpen = { viewModel.openFolder(it.path) },
                     onCreateFolder = { showCreateFolder = true },
                     onRequestDelete = { pendingDeleteFolder = it }
@@ -291,6 +307,7 @@ fun GalleryScreen(
                 else -> ScalingPhotoList(
                     items = photos,
                     columns = gridColumns,
+                    onColumnsChanged = { viewModel.setGridColumns(it) },
                     crownEvents = crownEvents,
                     animateGifs = animateGifs,
                     showNames = showPhotoNames,
@@ -605,9 +622,73 @@ private fun DateHeader(
  * 缩放/透明度在 graphicsLayer 绘制阶段按滚动位置实时计算，不触发重组。
  */
 @Composable
+/**
+ * 双指捏合改列数手势。
+ *
+ * - 单指事件一律放行：网格滚动、单击看大图、长按多选都不受影响。
+ * - 一旦检测到第二根手指按下，立即接管：把整串事件 consume 掉，网格不再滚动。
+ * - 张开 → 列数减少（图变大），捏合 → 列数增加（图变小），范围 2~10。
+ * - 松手后把小数列数平滑吸附到最近整数，并回写持久化。
+ */
+private fun Modifier.pointerPinchColumns(
+    enabled: Boolean,
+    scope: CoroutineScope,
+    displayColumns: androidx.compose.runtime.MutableFloatState,
+    pinching: androidx.compose.runtime.MutableState<Boolean>,
+    haptics: () -> Unit,
+    onSnap: (Int) -> Unit
+): Modifier = this.pointerInput(enabled) {
+    if (!enabled) return@pointerInput
+    awaitEachGesture {
+        val down = awaitFirstDown(requireUnconsumed = false)
+        // 只用前两根手指算距离；出现第二指的那帧才开始接管
+        var zoomStarted = false
+        var startDist = 1f
+        var startColumns = displayColumns.floatValue
+        while (true) {
+            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val pressed = event.changes.filter { it.pressed }
+            if (pressed.size < 2) {
+                // 所有手指抬起。若刚才在缩放，做吸附动画
+                if (zoomStarted) {
+                    pinching.value = false
+                    val from = displayColumns.floatValue
+                    val target = from.roundToInt().coerceIn(2, 10)
+                    scope.launch {
+                        animate(
+                            initialValue = from,
+                            targetValue = target.toFloat(),
+                            animationSpec = tween(200, easing = FastOutSlowInEasing)
+                        ) { value, _ -> displayColumns.floatValue = value }
+                        onSnap(target)
+                    }
+                }
+                break
+            }
+            if (!zoomStarted) {
+                zoomStarted = true
+                pinching.value = true
+                startColumns = displayColumns.floatValue
+                startDist = (pressed[0].position - pressed[1].position).getDistance().coerceAtLeast(1f)
+                haptics()
+            }
+            val dist = (pressed[0].position - pressed[1].position).getDistance().coerceAtLeast(1f)
+            val ratio = dist / startDist
+            // 张开 ratio>1 → 列数减少（图片变大）；捏合 ratio<1 → 列数增加
+            displayColumns.floatValue = (startColumns / ratio).coerceIn(2f, 10f)
+            // 接管这串指针：阻止 LazyGrid 把它当成滚动
+            event.changes.forEach { it.consume() }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 internal fun ScalingPhotoList(
     items: List<Photo>,
     columns: Int,
+    /** 双指捏合吸附到新列数后回调，供外部持久化；不传则只改当前显示 */
+    onColumnsChanged: (Int) -> Unit = {},
     crownEvents: Flow<Float>,
     animateGifs: Boolean,
     showNames: Boolean,
@@ -635,6 +716,20 @@ internal fun ScalingPhotoList(
     val screenHeightPx = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
     val screenWidthPx = with(density) { LocalConfiguration.current.screenWidthDp.dp.toPx() }
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // ── 双指捏合改列数 ──────────────────────────────────────────────
+    // displayColumns 是「视觉列数」（可带小数）。网格的列宽 = 屏宽 / displayColumns，
+    // 于是布局列数取 ceil：例如 3.8 → 布局 4 列，每格宽 = 屏宽/3.8，第 4 列右缘
+    // 超出屏幕被裁掉，正好露出 0.8 列 —— 松手前就看到「吸附后的列数」且部分列露出。
+    // 因为改的是真实布局宽度（不是绘制期 graphicsLayer），点击/划选坐标天然对齐。
+    val displayColumns = remember { mutableFloatStateOf(columns.toFloat()) }
+    // 外部（设置项 / 其它页面）改了列数时同步过来；捏合进行中不同步，避免打架
+    val pinching = remember { mutableStateOf(false) }
+    LaunchedEffect(columns) {
+        if (!pinching.value) displayColumns.floatValue = columns.toFloat()
+    }
+    val layoutColumns by remember { derivedStateOf { ceil(displayColumns.floatValue).toInt().coerceIn(2, 10) } }
 
     // 多选慢速拖动产生的滚动增量：手势回调处在受限协程作用域，不能直接调用
     // gridState.scroll{}，故把增量投递到普通协程里再执行滚动。
@@ -727,17 +822,30 @@ internal fun ScalingPhotoList(
         if (needMore) onLoadMore()
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().clipToBounds()) {
         val edgePad = (maxHeight / 2 - 72.dp).coerceAtLeast(24.dp)
         // 关掉 Compose 的过度滚动回弹（stretch/glow）：表冠滚到列表边界时它会把内容
         // 拉出再弹回，表现就是「滚动完向相反方向滚一小段」。f-x 的 Material2 LazyColumn
         // 没有这套效果，这里显式关闭以对齐它的硬停止手感。
         @OptIn(ExperimentalFoundationApi::class)
         CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
+        // 网格真实宽度 = 屏宽 × 布局列数 / 视觉列数。displayColumns 为整数时正好铺满屏幕；
+        // 有小数字（如 3.8）时网格比屏幕宽，超出的最后一列被上层 Box 裁掉，实现「部分露出」。
+        val gridWidth = maxWidth * layoutColumns / displayColumns.floatValue
         LazyVerticalGrid(
             state = gridState,
-            columns = GridCells.Fixed(columns),
-            modifier = Modifier.fillMaxSize(),
+            columns = GridCells.Fixed(layoutColumns),
+            modifier = Modifier.width(gridWidth).height(maxHeight)
+                // 双指捏合改列数：单指完全放行给网格滚动/点击；一旦识别双指就接管并 consume，
+                // 阻止滚动。捏合中只改 displayColumns（真实布局宽度随之变），松手吸附到整数列。
+                .pointerPinchColumns(
+                    enabled = !selectionMode,
+                    scope = scope,
+                    displayColumns = displayColumns,
+                    pinching = pinching,
+                    haptics = {},
+                    onSnap = { snapped -> onColumnsChanged(snapped) }
+                ),
             // 不在手势进行中切换 userScrollEnabled：长按进入多选时切换会重建滚动节点、
             // 打断正在进行的指针手势（v0.26 卡死崩溃的另一个诱因）。
             // 多选模式下覆盖层会消费掉全部事件，网格本来就滚不动，交给覆盖层手动滚动。
@@ -754,7 +862,7 @@ internal fun ScalingPhotoList(
                     is PhotoRow.Header -> row.key
                     is PhotoRow.Photo -> row.photo.uri.toString()
                 } },
-                span = { row -> if (row is PhotoRow.Header) GridItemSpan(columns) else GridItemSpan(1) }
+                span = { row -> if (row is PhotoRow.Header) GridItemSpan(layoutColumns) else GridItemSpan(1) }
             ) { row ->
               when (row) {
                 is PhotoRow.Header -> {
@@ -774,7 +882,7 @@ internal fun ScalingPhotoList(
                 // 缩略图：按单元格像素解码（不按原图），GIF 是否动由设置决定。
                 // 关闭动图时强制走 BitmapFactoryDecoder —— 它只解第一帧，
                 // 于是列表里是静态封面，点开看大图仍然是动的。
-                val cellPx = (screenWidthPx / columns).toInt().coerceAtLeast(96)
+                val cellPx = (screenWidthPx / displayColumns.floatValue).toInt().coerceAtLeast(96)
                 val thumbModel = remember(photo.uri, animateGifs, cellPx) {
                     val b = coil.request.ImageRequest.Builder(context)
                         .data(photo.uri)
@@ -804,6 +912,7 @@ internal fun ScalingPhotoList(
                 }
                 Box(
                     modifier = Modifier
+                        .animateItemPlacement(tween(220, easing = FastOutSlowInEasing))
                         .fillMaxWidth()
                         .aspectRatio(1f)
                         .onGloballyPositioned { coords ->
@@ -945,7 +1054,7 @@ internal fun ScalingPhotoList(
               } // when
             } // items(photoRows)
             if (hasMore) {
-                item(span = { GridItemSpan(columns) }, key = "load_more_footer") {
+                item(span = { GridItemSpan(layoutColumns) }, key = "load_more_footer") {
                     Box(
                         Modifier.fillMaxWidth().height(44.dp),
                         contentAlignment = Alignment.Center
@@ -1155,6 +1264,7 @@ private fun FolderList(
     createdFolders: Set<String>,
     crownEvents: Flow<Float>,
     isRound: Boolean,
+    listState: LazyListState,
     onOpen: (FolderEntry) -> Unit,
     onCreateFolder: () -> Unit,
     onRequestDelete: (FolderEntry) -> Unit
@@ -1163,34 +1273,39 @@ private fun FolderList(
         // 空列表也要能创建文件夹：给一个带「+」的入口
         Box(Modifier.fillMaxSize()) {
             FolderHint("没有可显示的文件夹\n可能都在设置里被隐藏了")
-            IconButton(
-                onClick = onCreateFolder,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp).size(40.dp)
+            val purple = Color(0xFF9C27B0)
+            Box(
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp)
+                    .size(40.dp).border(2.dp, purple, CircleShape).clip(CircleShape)
+                    .clickable(onClick = onCreateFolder),
+                contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    Icons.Filled.Add, "创建文件夹",
-                    modifier = Modifier.size(26.dp),
-                    tint = MaterialTheme.colorScheme.primary
-                )
+                Icon(Icons.Filled.Add, "创建文件夹", modifier = Modifier.size(24.dp), tint = purple)
             }
         }
         return
     }
-    ScalingScrollColumn(crownEvents = crownEvents) {
+    ScalingScrollColumn(crownEvents = crownEvents, listState = listState) {
         item(key = "folder_header") {
             Box(
                 Modifier.fillMaxWidth().height(36.dp).scalingItem("folder_header", scale = false)
             ) {
                 // 标题右侧「+」：比正文略大，点击创建文件夹
                 val addButton: @Composable () -> Unit = {
-                    IconButton(
-                        onClick = onCreateFolder,
-                        modifier = Modifier.size(34.dp)
+                    // 紫色空心圆圈包住加号：圆内透明，只有描边和加号是紫色
+                    val purple = Color(0xFF9C27B0)
+                    Box(
+                        modifier = Modifier
+                            .size(26.dp)
+                            .border(2.dp, purple, CircleShape)
+                            .clip(CircleShape)
+                            .clickable(onClick = onCreateFolder),
+                        contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             Icons.Filled.Add, "创建文件夹",
-                            modifier = Modifier.size(22.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            modifier = Modifier.size(16.dp),
+                            tint = purple
                         )
                     }
                 }
