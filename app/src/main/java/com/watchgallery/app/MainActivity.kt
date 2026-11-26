@@ -481,7 +481,11 @@ private fun AppNavigation(
                     animateGifs = animateGifs,
                     onPhotoClick = { photo ->
                         if (interactive) {
-                            viewerPhotos = null   // 普通相册：大图页用主列表
+                            // 固化打开瞬间的列表快照，而不是让大图页跟着实时 StateFlow 变。
+                            // 从最近删除恢复后 refresh() 是异步 scan：若大图页用实时列表，
+                            // 打开后列表一重排 index 就会错位（点这张却显示旁边那张、重进才好）。
+                            // 用快照后，大图页翻页/定位全程稳定，退出再进才重新取最新列表。
+                            viewerPhotos = photos
                             viewerUnder = Screen.Gallery
                             viewerOrigin = viewModel.viewerOrigin
                             viewerThumb = viewModel.viewerThumb
@@ -496,13 +500,13 @@ private fun AppNavigation(
                     val cp = currentPhoto
                     val baseList = viewerPhotos ?: photos
                     // 定位点开的那张。**优先用列表里的那个对象**：
-                    // 从最近删除恢复后，MediaStore 记录可能被重建 / uri 换卷，
-                    // currentPhoto 里存的是点击那一刻的对象，它的 uri 可能已经打不开
-                    // （表现就是点进去一片空白、或者停在第 0 张）。先用 media id 在
-                    // 列表里找同一个 id 的新对象，再按 uri 找，最后才用旧对象兜底。
+                    // uri 是稳定锚点（content uri 内嵌 MediaStore id；回收站 file uri 指向
+                    // 唯一备份文件），id 兜底。⚠️ 这里必须和 PhotoViewerScreen 的锚点策略一致：
+                    // 回收站图的 id 是「deletedAt + 索引」合成值，会撞车/随重排变化，若 id 优先
+                    // 会定位到相邻那张（点这张打不开、旁边的大图能滑进去）。
                     val anchored = cp?.let { c ->
-                        baseList.firstOrNull { it.id == c.id }
-                            ?: baseList.firstOrNull { it.uri == c.uri }
+                        baseList.firstOrNull { it.uri == c.uri }
+                            ?: baseList.firstOrNull { it.id == c.id }
                     }
                     val target = anchored ?: cp
                     // 列表里确实没有这张（refresh 的异步 scan 还没回填）才补到首位，

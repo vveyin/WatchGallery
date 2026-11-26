@@ -173,16 +173,21 @@ fun PhotoViewerScreen(
     }
     LaunchedEffect(photos) {
         if (photos.isEmpty()) return@LaunchedEffect
-        // 先按 media id 找锚点：id 是 MediaStore 主键，最稳定；恢复图跨卷扫描后
-        // uri 可能换卷而变，但 id 不变。id 找不到（记录被重建）再退回按 uri 找。
-        var target = if (anchorId >= 0) photos.indexOfFirst { it.id == anchorId } else -1
-        if (target < 0 && anchor != null) {
-            target = photos.indexOfFirst { it.uri.toString() == anchor }
-        }
-        if (target >= 0 && target < photos.size && target != index) {
+        // ⚠️ 必须以 uri 为第一锚点，和 MainActivity 算 initialIndex 的策略**完全一致**。
+        // 之前这里把 media id 放第一：相册图的 id 是 MediaStore 主键没问题，但回收站图的 id
+        // 是「deletedAt + 列表索引」合成出来的，多批删除时会撞车、列表重排后还会变。
+        // 按这种 id 找锚点就会定位到相邻那张 —— 表现正是「点这张打不开、旁边的大图能滑进去、
+        // 重进（撞车/顺序变了）就能点」。uri 则稳定：content uri 内嵌 MediaStore id，
+        // file uri 指向唯一备份文件，跨刷新/换卷都不变。
+        val byUri = if (anchor != null) photos.indexOfFirst { it.uri.toString() == anchor } else -1
+        val target = if (byUri >= 0) byUri
+                     else if (anchorId >= 0) photos.indexOfFirst { it.id == anchorId }
+                     else -1
+        if (target in photos.indices && target != index) {
             index = target
         }
-        // 兜底：index 越界时收回来，绝不停在「图片不存在」的空帧上
+        // 两个锚点都找不到（如跨卷换了 uri）：保留当前 index 不乱拽，
+        // 只有它越界时才收回到范围内，绝不停在「图片不存在」的空帧上。
         if (index !in photos.indices) index = photos.lastIndex.coerceAtLeast(0)
     }
     var scale by remember { mutableFloatStateOf(1f) }
