@@ -45,11 +45,13 @@ fun ScalingScrollColumn(
     ),
     verticalArrangement: Arrangement.Vertical = Arrangement.spacedBy(6.dp),
     listState: androidx.compose.foundation.lazy.LazyListState = rememberLazyListState(),
+    // 表冠归属门控：默认始终响应；大图抽屉列表用它和图片缩放/弹窗互斥
+    crownEnabled: () -> Boolean = { true },
     content: LazyListScope.() -> Unit
 ) {
 
     // 表冠滚动：照搬 f-x，事件到达直接 scrollBy（不触发 overscroll 回弹）
-    CrownScroll(crownEvents) { step ->
+    CrownScroll(crownEvents, enabled = crownEnabled) { step ->
         listState.scrollBy(step)
     }
 

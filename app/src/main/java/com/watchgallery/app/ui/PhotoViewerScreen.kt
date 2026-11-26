@@ -112,6 +112,14 @@ private val HandleZone = 38.dp
 /** 翻页触发比例：拖动超过屏高的这个比例就切到相邻一张 */
 private const val PAGE_THRESHOLD = 0.16f
 
+// ── 表冠归属：大图页同一串表冠事件同一时刻只能给一个消费者 ──
+// 抽屉列表 / 详情浮窗 / 图片缩放订阅同一个 crownEvents(SharedFlow)，
+// 不互斥的话转一下表冠会同时缩放图片+滚列表。优先级从高到低：
+private const val CROWN_OWNER_NONE = 0    // 谁都不响应（重命名输入框等）
+private const val CROWN_OWNER_DETAIL = 1  // 详细信息浮窗
+private const val CROWN_OWNER_DRAWER = 2  // 大图抽屉的操作列表
+private const val CROWN_OWNER_IMAGE = 3   // 图片缩放
+
 /**
  * 大图查看器。
  *
@@ -312,11 +320,26 @@ fun PhotoViewerScreen(
     val zoomInvert by viewModel.zoomInvertCrown.collectAsState()
     val zoomInvertRef = rememberUpdatedState(zoomInvert)
 
+    // 表冠归属：同一时刻只让一个消费者响应 crownEvents。
+    // 优先级：详细信息浮窗 > 重命名输入框(吞掉) > 抽屉列表 > 图片缩放。
+    // 抽屉只要露出一点(drawerVisible)就归列表，避免拉抽屉时图片还在缩放。
+    val crownOwner by remember {
+        derivedStateOf {
+            when {
+                showDetail -> CROWN_OWNER_DETAIL
+                renameTarget != null -> CROWN_OWNER_NONE
+                drawerVisible -> CROWN_OWNER_DRAWER
+                else -> CROWN_OWNER_IMAGE
+            }
+        }
+    }
+    val crownOwnerRef = rememberUpdatedState(crownOwner)
+
     // 表冠缩放：逐条消费增量，避免累加值导致缩放失控。
-    // 弹窗打开时表冠归弹窗用（详细信息里滚列表），这里必须让位，否则同一串事件会被用两遍。
+    // 只有归属是「图片缩放」时才响应；弹窗/抽屉打开时让位给对应列表。
     LaunchedEffect(crownEvents) {
         crownEvents.collect { delta ->
-            if (showDetail || renameTarget != null) return@collect
+            if (crownOwnerRef.value != CROWN_OWNER_IMAGE) return@collect
             val sign = if (zoomInvertRef.value) -1f else 1f
             setScale(scale + delta * 0.01f * sign)
         }
@@ -734,7 +757,8 @@ fun PhotoViewerScreen(
 
                     // ── 操作项列表：未来加功能往下加 item 即可，超出一屏可滚动 ──
                     ScalingScrollColumn(
-                        crownEvents = emptyFlow(),
+                        crownEvents = crownEvents,
+                        crownEnabled = { crownOwnerRef.value == CROWN_OWNER_DRAWER },
                         modifier = Modifier.weight(1f),
                         contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
                         verticalArrangement = Arrangement.spacedBy(7.dp)
@@ -841,6 +865,7 @@ fun PhotoViewerScreen(
                 PhotoDetailDialog(
                     photo = photo,
                     crownEvents = crownEvents,
+                    crownEnabled = { crownOwnerRef.value == CROWN_OWNER_DETAIL },
                     onClose = { showDetail = false }
                 )
             }
@@ -870,6 +895,7 @@ fun PhotoViewerScreen(
 private fun PhotoDetailDialog(
     photo: Photo,
     crownEvents: Flow<Float>,
+    crownEnabled: () -> Boolean = { true },
     onClose: () -> Unit
 ) {
     val date = remember(photo.dateAdded) {
@@ -885,7 +911,7 @@ private fun PhotoDetailDialog(
         }
     }
     val scroll = rememberScrollState()
-    CrownScroll(crownEvents) { step -> scroll.scrollBy(step) }
+    CrownScroll(crownEvents, enabled = crownEnabled) { step -> scroll.scrollBy(step) }
     WatchDialog(
         onDismiss = onClose,
         title = "详细信息",

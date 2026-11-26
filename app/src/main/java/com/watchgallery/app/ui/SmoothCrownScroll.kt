@@ -2,6 +2,7 @@ package com.watchgallery.app.ui
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.coroutines.flow.Flow
 
 /**
@@ -15,17 +16,23 @@ import kotlinx.coroutines.flow.Flow
  *
  * @param crownEvents 表冠增量事件流（已含方向与灵敏度）
  * @param pixelsPerUnit 每个增量单位对应的滚动像素，f-x 取 1.0
+ * @param enabled 门控：表冠事件的「归属」判断，返回 false 时本消费者丢弃该事件。
+ *                大图页有多个表冠消费者（图片缩放 / 抽屉列表 / 详情浮窗），
+ *                它们订阅同一个 SharedFlow，必须靠它做互斥，避免一串事件被用两遍。
+ *                用 rememberUpdatedState 读最新值，切换归属不必重启 collect。
  * @param applyDelta 把位移应用到具体滚动状态；step 已内化负号，直接 scrollBy 即可
  */
 @Composable
 fun CrownScroll(
     crownEvents: Flow<Float>,
     pixelsPerUnit: Float = 1f,
+    enabled: () -> Boolean = { true },
     applyDelta: suspend (Float) -> Unit
 ) {
+    val enabledRef = rememberUpdatedState(enabled)
     LaunchedEffect(crownEvents) {
         crownEvents.collect { delta ->
-            if (delta.isFinite() && delta != 0f) {
+            if (enabledRef.value() && delta.isFinite() && delta != 0f) {
                 applyDelta(-delta * pixelsPerUnit)
             }
         }
