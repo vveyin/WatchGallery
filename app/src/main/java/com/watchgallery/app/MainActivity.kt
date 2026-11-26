@@ -109,6 +109,7 @@ class MainActivity : ComponentActivity() {
                 if (showCrashReport) {
                     CrashReportScreen(
                         isRound = round,
+                        crownEvents = viewModel.crownEvents,
                         onContinue = {
                             CrashLogger.log(context, "user dismissed crash report")
                             showCrashReport = false

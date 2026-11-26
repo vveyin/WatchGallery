@@ -50,6 +50,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -91,7 +92,8 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onCrownPrefsChanged: () -> Unit,
     onSubPageChanged: (Boolean) -> Unit = {},
-    onOpenTrash: () -> Unit = {}
+    onOpenTrash: () -> Unit = {},
+    onOpenLog: () -> Unit = {}
 ) {
     var subPage by remember { mutableStateOf<SubPage>(SubPage.Main) }
     LaunchedEffect(subPage) { onSubPageChanged(subPage == SubPage.Main) }
@@ -150,7 +152,8 @@ fun SettingsScreen(
                 onOpenDiag = { subPage = SubPage.Diag },
                 onOpenHidden = { subPage = SubPage.Hidden },
                 onOpenUpdate = { subPage = SubPage.Update },
-                onOpenAbout = { subPage = SubPage.About }
+                onOpenAbout = { subPage = SubPage.About },
+                onOpenLog = { subPage = SubPage.Log }
             )
         }
 
@@ -246,6 +249,7 @@ fun SettingsScreen(
                         crownEvents = crownEvents
                     )
                     SubPage.About -> AboutPage(crownEvents = crownEvents)
+                    SubPage.Log -> LogViewerPage(crownEvents = crownEvents)
                     SubPage.Main -> {}
                 }
             }
@@ -263,6 +267,7 @@ private sealed class SubPage {
     data object Hidden : SubPage()
     data object Update : SubPage()
     data object About : SubPage()
+    data object Log : SubPage()
 }
 
 /** 设置主页 */
@@ -279,7 +284,8 @@ private fun SettingsMain(
     onOpenDiag: () -> Unit,
     onOpenHidden: () -> Unit,
     onOpenUpdate: () -> Unit,
-    onOpenAbout: () -> Unit
+    onOpenAbout: () -> Unit,
+    onOpenLog: () -> Unit
 ) {
     val themeMode by viewModel.themeMode.collectAsState()
     val sortMode by viewModel.sortMode.collectAsState()
@@ -485,14 +491,10 @@ private fun SettingsMain(
         }
         item(key = "row_log") {
             SettingButton(
-                icon = Icons.Filled.ContentCopy,
-                title = "复制日志",
-                subtitle = "崩溃与运行日志，用于排查问题",
-                onClick = {
-                    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                    cm.setPrimaryClip(ClipData.newPlainText("WatchGallery 日志", CrashLogger.read(context)))
-                    Toast.makeText(context, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
-                },
+                icon = Icons.Filled.Article,
+                title = "查看日志",
+                subtitle = "崩溃与运行日志，可复制、可清除",
+                onClick = onOpenLog,
                 itemKey = "row_log"
             )
         }
@@ -1456,6 +1458,78 @@ private fun DiagLine(label: String, value: String) {
             color = MaterialTheme.colorScheme.onSurfaceVariant)
         Text(value, style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onBackground)
+    }
+}
+
+/**
+ * 运行日志查看页 —— 作为设置二级菜单打开，自动获得同款进/出动画、毛玻璃背景与边缘右划返回。
+ * 用 [ScalingScrollColumn] 承载，支持表冠滚动（与设置/诊断页同一套）。
+ * 只展示日志 + 复制/清除，**不提示崩溃**（与启动时的崩溃报告页区分）。
+ */
+@Composable
+private fun LogViewerPage(crownEvents: Flow<Float>) {
+    val context = LocalContext.current
+    var logText by remember { mutableStateOf(CrashLogger.read(context)) }
+
+    ScalingScrollColumn(crownEvents = crownEvents) {
+        item(key = "log_title") {
+            Box(
+                Modifier.fillMaxWidth().height(28.dp).settingItem("log_title", scale = false),
+                contentAlignment = Alignment.Center
+            ) {
+                Text("运行日志", style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onBackground)
+            }
+        }
+        item(key = "log_actions") {
+            Box(Modifier.fillMaxWidth().settingItem("log_actions", scale = false)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Button(
+                        onClick = {
+                            val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                            cm.setPrimaryClip(ClipData.newPlainText("WatchGallery 日志", logText))
+                            Toast.makeText(context, "日志已复制到剪贴板", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f).height(40.dp)
+                    ) {
+                        Icon(Icons.Filled.ContentCopy, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("复制", fontSize = 12.sp)
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            CrashLogger.clear(context)
+                            logText = CrashLogger.read(context)
+                            Toast.makeText(context, "日志已清除", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.height(40.dp)
+                    ) {
+                        Icon(Icons.Filled.Delete, null, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text("清除", fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+        item(key = "log_body") {
+            Box(Modifier.fillMaxWidth().settingItem("log_body", scale = false)) {
+                val shown = if (logText.isBlank()) "（暂无日志）" else logText
+                Text(
+                    shown,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 10.sp,
+                        lineHeight = 13.sp
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .padding(8.dp)
+                )
+            }
+        }
     }
 }
 
