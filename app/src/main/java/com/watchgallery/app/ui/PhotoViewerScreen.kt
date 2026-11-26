@@ -156,21 +156,33 @@ fun PhotoViewerScreen(
         mutableIntStateOf(initialIndex.coerceIn(0, (photos.size - 1).coerceAtLeast(0)))
     }
 
-    // 恢复图等异步刷新场景：点进来那一帧列表可能还没刷新到位，initialIndex 会算错
-    // （indexOfFirst 找不到 → 被顶到 0）并被 remember 锁死，之后列表补齐也不纠正，
-    // 表现就是「点这张打不开 / 打开的是别的图」，而杀后台重进因数据一次就绪就正常。
-    // 这里在列表就绪后按 focusPhoto 重新定位一次，找到后才锁定；找到之前持续重试，
-    // 锁定之后用户翻页不再被拉回。
-    var located by remember { mutableStateOf(focusPhoto == null) }
-    LaunchedEffect(photos, focusPhoto) {
-        if (located || focusPhoto == null) return@LaunchedEffect
-        val target = photos.indexOfFirst { it.uri == focusPhoto.uri }
-            .takeIf { it >= 0 }
-            ?: photos.indexOfFirst { it.id == focusPhoto.id }
-        if (target >= 0 && target < photos.size) {
-            index = target
-            located = true
+    // 当前正在看的这张用「稳定标识（uri，media id 兜底）」锚定，而不是记住一个
+    // 会因列表刷新而错位的位置。恢复图这类异步刷新场景：点进来那一帧列表还没到位，
+    // 之后 scan 回填会重排列表 —— 只记 index 就会指向别的图，表现成「点这张打不开 /
+    // 打开的是旁边的图，滑一下才到」，而重进（数据一次就绪）就正常。
+    // 现在列表每次变化都按锚点把 index 重新算到同一张图上；用户主动翻页时同步换锚点，
+    // 所以刷新也不会把人拽回原处。
+    var anchor by remember {
+        mutableStateOf(
+            focusPhoto?.uri?.toString()
+                ?: photos.getOrNull(initialIndex)?.uri?.toString()
+        )
+    }
+    var anchorId by remember {
+        mutableLongStateOf(focusPhoto?.id ?: photos.getOrNull(initialIndex)?.id ?: -1L)
+    }
+    LaunchedEffect(photos) {
+        if (photos.isEmpty()) return@LaunchedEffect
+        // 先按 uri 找锚点；跨卷扫描 uri 会变，再按 media id 兜底
+        var target = if (anchor != null) photos.indexOfFirst { it.uri.toString() == anchor } else -1
+        if (target < 0 && anchorId >= 0) {
+            target = photos.indexOfFirst { it.id == anchorId }
         }
+        if (target >= 0 && target < photos.size && target != index) {
+            index = target
+        }
+        // 兜底：index 越界时收回来，绝不停在「图片不存在」的空帧上
+        if (index !in photos.indices) index = photos.lastIndex.coerceAtLeast(0)
     }
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -391,6 +403,11 @@ fun PhotoViewerScreen(
             else if (pageOffset >= threshold) delta = -1
             if (delta != 0 && n > 1) {
                 index = wrapIndex(index + delta, n)
+                // 用户主动翻页 → 换锚点到当前这张，后面的异步刷新就停在这张、不往回拽
+                photos.getOrNull(index)?.let {
+                    anchor = it.uri.toString()
+                    anchorId = it.id
+                }
                 pageOffset += delta * pageH
                 scale = 1f
                 offset = Offset.Zero
