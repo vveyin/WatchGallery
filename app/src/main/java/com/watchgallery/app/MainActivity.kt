@@ -354,13 +354,22 @@ private fun AppNavigation(
     }
 
     /**
-     * 入栈：先把新页面放到屏幕右侧（第一帧不可见），再推进导航栈，然后缓动滑入。
-     * 同步更新底层进度，底层「一级菜单退开」的动画才不会先瞬移一帧再开始。
+     * 入栈：同步推进导航栈，再把新页面放到屏幕右侧并缓动滑入。
+     *
+     * ⚠️ backStack.add 必须与 goBack 的出栈一样「同步」执行：此前它排在协程里、
+     * 且位于 enterOffset.snapTo 之后。连续快速导航时 snapTo 会挂起等待上一段动画释放，
+     * 这期间同步的 goBack() 可能先把当前页弹掉，随后本协程才把新页 add 进来 ——
+     * 栈里就残留一个已经不可见、但仍是 current 的看图页。表现：回到相册后
+     * current 不是 Gallery → 相册层 interactive=false → 点相册照片完全没反应，
+     * 且「重进 App 就好」（重进把栈重置为 [Gallery]）。日志已证实该现象。
+     *
+     * add 提到协程外同步执行后，launch 里第一帧 snapTo 仍是同步完成的，不会闪现。
      */
     fun navigate(to: Screen) {
+        backStack.add(to)
+        CrashLogger.log(appCtx, "DBG navigate +${to::class.simpleName} stack=[${backStack.joinToString { it::class.simpleName ?: "?" }}]")
         navScope.launch {
             enterOffset.snapTo(enterWidthPx)
-            backStack.add(to)
             enterOffset.animateTo(0f, tween(260, easing = FastOutSlowInEasing))
         }
     }
@@ -368,6 +377,7 @@ private fun AppNavigation(
     fun goBack() {
         if (backStack.size > 1) {
             backStack.removeAt(backStack.lastIndex)
+            CrashLogger.log(appCtx, "DBG goBack - stack=[${backStack.joinToString { it::class.simpleName ?: "?" }}]")
             suppressDrawerCover = backStack.last() is Screen.Trash
             popTick++
         }
