@@ -475,6 +475,17 @@ private fun AppNavigation(
     @Composable
     fun ScreenLayer(screen: Screen, interactive: Boolean) {
         val layerCrown = if (interactive && !settingsOpen) crownEvents else emptyFlow()
+        // 点击门控不能在回调里读捕获进来的 interactive 布尔值 ——
+        // pointerInput 的 detectTapGestures 闭包是建链那一刻创建的，会一直持有当时的值。
+        // 相册层常驻组合：进回收站/看图期间它被重组为 interactive=false，回到相册后
+        // 即使重新变 true，旧闭包里仍是 false（日志已证实：stack=[P] 却 gallery.onPhotoClick
+        // interactive=false）。改为在点击真正发生时直接读导航栈：backStack 是稳定的
+        // SnapshotStateList 引用，任何时刻读到的都是当前栈顶，不受闭包创建时机影响。
+        fun tapAllowed(): Boolean = when (screen) {
+            is Screen.Gallery -> backStack.lastOrNull() is Screen.Gallery
+            is Screen.Trash -> backStack.lastOrNull() is Screen.Trash
+            else -> backStack.lastOrNull() == screen
+        }
         // 大图页、编辑页都透明：它们自己带黑底并随入场动画淡入，
         // 这样从大图进编辑页能看到图片「浮起来」而不是先黑一下。
         val bg = when {
@@ -493,8 +504,8 @@ private fun AppNavigation(
                     crownEvents = layerCrown,
                     animateGifs = animateGifs,
                     onPhotoClick = { photo ->
-                        CrashLogger.log(appCtx, "DBG gallery.onPhotoClick interactive=$interactive uri=${photo.uri}")
-                        if (interactive) {
+                        CrashLogger.log(appCtx, "DBG gallery.onPhotoClick live=${tapAllowed()} uri=${photo.uri}")
+                        if (tapAllowed()) {
                             // 固化打开瞬间的列表快照，而不是让大图页跟着实时 StateFlow 变。
                             // 从最近删除恢复后 refresh() 是异步 scan：若大图页用实时列表，
                             // 打开后列表一重排 index 就会错位（点这张却显示旁边那张、重进才好）。
@@ -507,8 +518,8 @@ private fun AppNavigation(
                             navigate(Screen.Viewer)
                         }
                     },
-                    onOpenSettings = { if (interactive) openSettings() },
-                    onCheckUpdate = { if (interactive) navigate(Screen.Update) }
+                    onOpenSettings = { if (tapAllowed()) openSettings() },
+                    onCheckUpdate = { if (tapAllowed()) navigate(Screen.Update) }
                 )
                 is Screen.Viewer -> {
                     val cp = currentPhoto
@@ -593,10 +604,10 @@ private fun AppNavigation(
                     isRound = isRound,
                     crownEvents = layerCrown,
                     animateGifs = animateGifs,
-                    onBack = { if (interactive) onTrashBack() },
+                    onBack = { if (tapAllowed()) onTrashBack() },
                     onOpenPhoto = { photo, all ->
-                        CrashLogger.log(appCtx, "DBG trash.onOpenPhoto interactive=$interactive size=${all.size} uri=${photo.uri}")
-                        if (interactive) {
+                        CrashLogger.log(appCtx, "DBG trash.onOpenPhoto live=${tapAllowed()} size=${all.size} uri=${photo.uri}")
+                        if (tapAllowed()) {
                             // 从回收站进看图：navigate 里 snapTo(enterWidthPx) 到 backStack.add 之间
                             // 有一帧 current 仍是 Trash，drawerCover 会按浮层进度算出 1f 闪出一帧设置菜单。
                             // 先压住抽屉 cover，入栈动画结束后由 popTick 之外单独放开。
