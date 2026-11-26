@@ -87,6 +87,7 @@ import coil.compose.rememberAsyncImagePainter
 import com.watchgallery.app.data.FolderEntry
 import com.watchgallery.app.data.Photo
 import com.watchgallery.app.theme.AppColors
+import com.watchgallery.app.util.CrashLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.delay
@@ -1065,6 +1066,7 @@ internal fun ScalingPhotoList(
                                             onLongPress(photo.uri.toString())
                                         },
                                         onTap = {
+                                            CrashLogger.log(context, "DBG cell.onTap fired uri=${photo.uri}")
                                             // 记下这张缩略图在屏幕上的位置：大图页会从这里放大展开
                                             onRecordOrigin(
                                                 cellRects[photo.uri.toString()],

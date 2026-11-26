@@ -261,6 +261,8 @@ private fun AppNavigation(
     snackbarHostState: SnackbarHostState,
     onCrownPrefsChanged: () -> Unit
 ) {
+    // 诊断日志用：点击链路埋点，复现后到 设置→关于→复制日志 导出
+    val appCtx = LocalContext.current
     // 删除「已删除 N 张图片」黑药丸提示（在 setContent 里定时清除）
     val deleteToast by viewModel.deleteToast.collectAsState()
     // 导航栈：栈底 Gallery，push 进入 Viewer/Editor/Update，pop 返回。
@@ -480,6 +482,7 @@ private fun AppNavigation(
                     crownEvents = layerCrown,
                     animateGifs = animateGifs,
                     onPhotoClick = { photo ->
+                        CrashLogger.log(appCtx, "DBG gallery.onPhotoClick interactive=$interactive uri=${photo.uri}")
                         if (interactive) {
                             // 固化打开瞬间的列表快照，而不是让大图页跟着实时 StateFlow 变。
                             // 从最近删除恢复后 refresh() 是异步 scan：若大图页用实时列表，
@@ -581,6 +584,7 @@ private fun AppNavigation(
                     animateGifs = animateGifs,
                     onBack = { if (interactive) onTrashBack() },
                     onOpenPhoto = { photo, all ->
+                        CrashLogger.log(appCtx, "DBG trash.onOpenPhoto interactive=$interactive size=${all.size} uri=${photo.uri}")
                         if (interactive) {
                             // 从回收站进看图：navigate 里 snapTo(enterWidthPx) 到 backStack.add 之间
                             // 有一帧 current 仍是 Trash，drawerCover 会按浮层进度算出 1f 闪出一帧设置菜单。
