@@ -923,7 +923,12 @@ internal fun ScalingPhotoList(
                 }
                 Box(
                     modifier = Modifier
-                        .animateItemPlacement(tween(220, easing = FastOutSlowInEasing))
+                        // 不要在这里用 animateItemPlacement：设置里改每排列数是「瞬间跳变」
+                        // （捏合才是连续渐变），列数一跳 header 的 span 也跟着变，Compose 1.6.x
+                        // 的位置动画会在 LazyGrid measure 时把同一节点 place 两次，
+                        // 直接抛 IllegalStateException: Place was called on a node which was
+                        // placed already（改完列数停在设置页过几秒闪退）。照片仍有下面的
+                        // appear 淡入放大动画，视觉不受影响。
                         .fillMaxWidth()
                         .aspectRatio(1f)
                         .onGloballyPositioned { coords ->
