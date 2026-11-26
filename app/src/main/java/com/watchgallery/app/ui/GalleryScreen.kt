@@ -66,6 +66,7 @@ import androidx.compose.ui.input.pointer.PointerInputChange
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
@@ -75,6 +76,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.app.ActivityCompat
@@ -87,6 +89,7 @@ import com.watchgallery.app.data.Photo
 import com.watchgallery.app.theme.AppColors
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -829,12 +832,30 @@ internal fun ScalingPhotoList(
             last >= photoRows.size - columns * PRELOAD_ROWS
         }
     }
+    // 列数一变，needMore 的阈值（columns × PRELOAD_ROWS）就瞬间翻转：10 列 → 1 列
+    // 时阈值一下缩小几十条，立刻回调 onLoadMore 会让列表数据「在同一帧里增长」，
+    // 正好撞上因列数变化而重新布局的 LazyGrid，二次 measure 时容易把已放置过的
+    // 节点再 place 一次（闪退）。这里错开一拍再确认，正常滚到底几乎无感。
     LaunchedEffect(needMore) {
+        if (!needMore) return@LaunchedEffect
+        delay(160)
         if (needMore) onLoadMore()
     }
 
-    BoxWithConstraints(modifier = Modifier.fillMaxSize().clipToBounds()) {
-        val edgePad = (maxHeight / 2 - 72.dp).coerceAtLeast(24.dp)
+    // 尺寸改用普通 Box + onSizeChanged 读取，**不用** BoxWithConstraints。
+    // BoxWithConstraints 内部是 SubcomposeLayout，它的 content 在「测量阶段」执行；
+    // 而这里要读 displayColumns（列数）算网格宽度。设置里改「每排照片」是瞬间跳变，
+    // 会在测量过程中让子组合失效、重入布局，把已经放置过的节点再 place 一次，抛
+    // IllegalStateException: Place was called on a node which was placed already（闪退）。
+    // 换成 onSizeChanged 后，尺寸变化只触发普通重组，不会再重入测量阶段。
+    var listSize by remember { mutableStateOf(IntSize.Zero) }
+    Box(modifier = Modifier.fillMaxSize().clipToBounds().onSizeChanged { listSize = it }) {
+        // 首帧还没量出尺寸时用屏幕尺寸兜底（这本就是全屏列表），第二帧起用实测值
+        val boxWidth = if (listSize.width > 0) with(density) { listSize.width.toDp() }
+                       else LocalConfiguration.current.screenWidthDp.dp
+        val boxHeight = if (listSize.height > 0) with(density) { listSize.height.toDp() }
+                        else LocalConfiguration.current.screenHeightDp.dp
+        val edgePad = (boxHeight / 2 - 72.dp).coerceAtLeast(24.dp)
         // 关掉 Compose 的过度滚动回弹（stretch/glow）：表冠滚到列表边界时它会把内容
         // 拉出再弹回，表现就是「滚动完向相反方向滚一小段」。f-x 的 Material2 LazyColumn
         // 没有这套效果，这里显式关闭以对齐它的硬停止手感。
@@ -842,11 +863,11 @@ internal fun ScalingPhotoList(
         CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
         // 网格真实宽度 = 屏宽 × 布局列数 / 视觉列数。displayColumns 为整数时正好铺满屏幕；
         // 有小数字（如 3.8）时网格比屏幕宽，超出的最后一列被上层 Box 裁掉，实现「部分露出」。
-        val gridWidth = maxWidth * layoutColumns / displayColumns.floatValue
+        val gridWidth = boxWidth * layoutColumns / displayColumns.floatValue
         LazyVerticalGrid(
             state = gridState,
             columns = GridCells.Fixed(layoutColumns),
-            modifier = Modifier.width(gridWidth).height(maxHeight)
+            modifier = Modifier.width(gridWidth).height(boxHeight)
                 // 双指捏合改列数：单指完全放行给网格滚动/点击；一旦识别双指就接管并 consume，
                 // 阻止滚动。捏合中只改 displayColumns（真实布局宽度随之变），松手吸附到整数列。
                 .pointerPinchColumns(

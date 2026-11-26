@@ -493,23 +493,31 @@ private fun AppNavigation(
                     onCheckUpdate = { if (interactive) navigate(Screen.Update) }
                 )
                 is Screen.Viewer -> {
-                    // 兜底：从最近删除恢复后，相册列表要等 refresh() 异步 scan 回填，
-                    // 点击那一刻「点中的那张」可能还没出现在大图列表里 ——
-                    // indexOfFirst 找不到就被顶到第 0 张，表现成「点这张打不开、
-                    // 打开的是别的图；重进（scan 一次就绪）就正常」。
-                    // 直接把点中的那张补进列表首位，保证一定能定位到它。
                     val cp = currentPhoto
                     val baseList = viewerPhotos ?: photos
-                    val viewerList = if (cp != null &&
-                        baseList.none { it.uri == cp.uri || it.id == cp.id }
-                    ) listOf(cp) + baseList else baseList
-                    // 定位点开的那张：先按 uri；恢复图跨卷扫描后 uri 可能换卷而变，
-                    // 再按 media id 兜底，避免定位失败被 coerceAtLeast(0) 顶到第一张、
-                    // 看起来像「点这张没反应 / 打开了别的图」。
-                    val byUri = if (cp != null) viewerList.indexOfFirst { it.uri == cp.uri } else -1
-                    val idx = (if (byUri >= 0) byUri
-                               else if (cp != null) viewerList.indexOfFirst { it.id == cp.id }
-                               else -1).coerceAtLeast(0)
+                    // 定位点开的那张。**优先用列表里的那个对象**：
+                    // 从最近删除恢复后，MediaStore 记录可能被重建 / uri 换卷，
+                    // currentPhoto 里存的是点击那一刻的对象，它的 uri 可能已经打不开
+                    // （表现就是点进去一片空白、或者停在第 0 张）。先用 media id 在
+                    // 列表里找同一个 id 的新对象，再按 uri 找，最后才用旧对象兜底。
+                    val anchored = cp?.let { c ->
+                        baseList.firstOrNull { it.id == c.id }
+                            ?: baseList.firstOrNull { it.uri == c.uri }
+                    }
+                    val target = anchored ?: cp
+                    // 列表里确实没有这张（refresh 的异步 scan 还没回填）才补到首位，
+                    // 保证「点哪张就一定看得到哪张」，而不是被顶到第 0 张。
+                    val viewerList = if (target != null &&
+                        baseList.none { it.uri == target.uri || it.id == target.id }
+                    ) listOf(target) + baseList else baseList
+                    // 再按「同一个对象的 uri → media id」定位它的下标
+                    val idx = (if (target != null)
+                                 viewerList.indexOfFirst { it.uri == target.uri }
+                               else -1)
+                        .takeIf { it >= 0 }
+                        ?: (if (target != null)
+                                viewerList.indexOfFirst { it.id == target.id }
+                            else -1).coerceAtLeast(0)
                     PhotoViewerScreen(
                         viewModel = viewModel,
                         photos = viewerList,
@@ -521,7 +529,7 @@ private fun AppNavigation(
                         thumb = viewerThumb,
                         blurEnabled = blurBackdrop,
                         // 传入「点进来的那张」：列表异步刷新后据此重新定位，修复恢复图点不开
-                        focusPhoto = cp,
+                        focusPhoto = target,
                         isTrash = viewerUnder is Screen.Trash,
                         onBack = { if (interactive) goBack() },
                         onEdit = { photo ->

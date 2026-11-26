@@ -173,10 +173,11 @@ fun PhotoViewerScreen(
     }
     LaunchedEffect(photos) {
         if (photos.isEmpty()) return@LaunchedEffect
-        // 先按 uri 找锚点；跨卷扫描 uri 会变，再按 media id 兜底
-        var target = if (anchor != null) photos.indexOfFirst { it.uri.toString() == anchor } else -1
-        if (target < 0 && anchorId >= 0) {
-            target = photos.indexOfFirst { it.id == anchorId }
+        // 先按 media id 找锚点：id 是 MediaStore 主键，最稳定；恢复图跨卷扫描后
+        // uri 可能换卷而变，但 id 不变。id 找不到（记录被重建）再退回按 uri 找。
+        var target = if (anchorId >= 0) photos.indexOfFirst { it.id == anchorId } else -1
+        if (target < 0 && anchor != null) {
+            target = photos.indexOfFirst { it.uri.toString() == anchor }
         }
         if (target >= 0 && target < photos.size && target != index) {
             index = target
