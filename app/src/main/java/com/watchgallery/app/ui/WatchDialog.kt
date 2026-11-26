@@ -1,10 +1,14 @@
 package com.watchgallery.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -67,6 +71,13 @@ fun WatchDialog(
     onConfirm: (() -> Unit)? = null,
     /** 内容区滚动状态：需要表冠滚动时由调用方传进来，不传就自己建一个 */
     scrollState: ScrollState? = null,
+    /**
+     * true = 嵌在 Activity 内容里（不是独立 Dialog 窗口）。
+     * 独立 Dialog 窗口有自己的 Window，MotionEvent 不会走 Activity.dispatchGenericMotionEvent，
+     * 导致我们按「表冠适配」模式解析出来的 crownEvents 送不进来，详情浮窗只剩系统默认滚动。
+     * 一些需要表冠双模式滚动的浮窗（如图片详情）要用内嵌模式。
+     */
+    embedded: Boolean = false,
     body: @Composable ColumnScope.() -> Unit
 ) {
     // 出现动画：面板从 0.82 倍放大 + 淡入；关闭时反向缩小淡出，避免硬消失。
@@ -90,13 +101,13 @@ fun WatchDialog(
         pendingClose.value = action
     }
 
-    Dialog(
-        onDismissRequest = { requestClose(onDismiss) },
-        properties = DialogProperties(
-            usePlatformDefaultWidth = false,
-            decorFitsSystemWindows = false
-        )
-    ) {
+    // 内嵌模式要自己接管返回键（独立 Dialog 会消费返回键，内嵌不会）
+    if (embedded) {
+        BackHandler(enabled = !dismissing) { requestClose(onDismiss) }
+    }
+
+    // 容器：独立 Dialog 或 Activity 内嵌覆盖层，二者共用同一份面板内容
+    val panel: @Composable () -> Unit = {
         BoxWithConstraints(
             modifier = Modifier.fillMaxSize().imePadding(),
             contentAlignment = Alignment.Center
@@ -109,11 +120,18 @@ fun WatchDialog(
             Surface(
                 shape = RoundedCornerShape(20.dp),
                 color = MaterialTheme.colorScheme.surface,
-                modifier = Modifier.size(side).graphicsLayer {
-                    alpha = enter.value
-                    scaleX = scale
-                    scaleY = scale
-                }
+                modifier = Modifier
+                    .size(side)
+                    // 内嵌时吞掉面板内的点击，避免穿透到外层「点外部关闭」
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null
+                    ) {}
+                    .graphicsLayer {
+                        alpha = enter.value
+                        scaleX = scale
+                        scaleY = scale
+                    }
             ) {
                 Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
                     if (title != null) {
@@ -153,6 +171,29 @@ fun WatchDialog(
                 }
             }
         }
+    }
+
+    if (embedded) {
+        // 内嵌覆盖层：留在 Activity 窗口内，表冠 MotionEvent 才能被
+        // MainActivity.dispatchGenericMotionEvent 拦截并按「表冠适配」模式解析。
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.5f))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null
+                ) { requestClose(onDismiss) },
+            contentAlignment = Alignment.Center
+        ) { panel() }
+    } else {
+        Dialog(
+            onDismissRequest = { requestClose(onDismiss) },
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
+        ) { panel() }
     }
 }
 

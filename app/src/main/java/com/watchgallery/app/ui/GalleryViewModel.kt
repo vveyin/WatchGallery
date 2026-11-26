@@ -110,6 +110,23 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         setFolderHidden(path, path !in _hiddenFolders.value)
     }
 
+    // ── 软删除：被移入最近删除的照片原图 uri（原图仍在 MediaStore，仅从相册隐藏）──
+    /**
+     * 软删除的照片原图 uri 集合。这些照片的 MediaStore 记录从未被删除，
+     * 只在相册列表里隐藏；恢复 = 从这里移除，彻底删除 = 这时才真正调系统删除。
+     * 用 uri 字符串做 key（MediaStore 的 content uri 含稳定 id，导入图是稳定的 file uri）。
+     */
+    private val _hiddenPhotoUris = MutableStateFlow(
+        prefs.getStringSet("hidden_photo_uris", emptySet())?.toSet() ?: emptySet()
+    )
+    val hiddenPhotoUris: StateFlow<Set<String>> = _hiddenPhotoUris
+
+    private fun setHiddenPhotoUris(uris: Set<String>) {
+        if (_hiddenPhotoUris.value == uris) return
+        _hiddenPhotoUris.value = uris
+        prefs.edit().putStringSet("hidden_photo_uris", HashSet(uris)).apply()
+    }
+
     // ── 应用内创建的文件夹 ──
     /**
      * 应用内创建的文件夹相对路径集合。文件夹视图只从「有照片的目录」派生条目，
@@ -144,11 +161,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     /** 某个文件夹是否是应用内创建的（可删除） */
     fun isCreatedFolder(path: String): Boolean = path in _createdFolders.value
 
-    /** 隐藏过滤后的全部照片：两种浏览方式、大图翻页、文件夹树都基于它 */
+    /** 隐藏过滤后的全部照片：两种浏览方式、大图翻页、文件夹树都基于它
+     *  （软删除的照片原图仍在扫描结果里，这里按 uri 一并隐藏） */
     private val visiblePhotos: StateFlow<List<Photo>> =
-        combine(_allPhotos, _hiddenFolders) { list, hidden ->
-            if (hidden.isEmpty()) list
-            else list.filter { !isFolderHidden(it.folderPath, hidden) }
+        combine(_allPhotos, _hiddenFolders, _hiddenPhotoUris) { list, hidden, hiddenUris ->
+            var out = list
+            if (hidden.isNotEmpty()) out = out.filter { !isFolderHidden(it.folderPath, hidden) }
+            if (hiddenUris.isNotEmpty()) out = out.filter { it.uri.toString() !in hiddenUris }
+            out
         }.stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     /** 列表可见的照片（分页切片，平铺模式用） */
@@ -342,6 +362,14 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _message = MutableStateFlow<String?>(null)
     val message: StateFlow<String?> = _message
 
+    /**
+     * 删除提示：用关于页那种黑药丸 InAppToast 显示（"已删除 N 张图片"），
+     * 与 _message（底部 Snackbar）分开，避免两种提示互相顶掉。
+     */
+    private val _deleteToast = MutableStateFlow<String?>(null)
+    val deleteToast: StateFlow<String?> = _deleteToast
+    fun clearDeleteToast() { _deleteToast.value = null }
+
     // ── 启动自动检查到的新版本 ──
     /** 冷启动联网检测到的新版本；更新页读取后立即清空，避免下次手动进入时重复展示 */
     private val _pendingUpdate = MutableStateFlow<ReleaseInfo?>(null)
@@ -431,9 +459,13 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
 
     fun restoreTrash(photo: Photo) {
         viewModelScope.launch {
-            val ok = trashRepo.restore(photo, _restoreKeepOriginalDate.value)
-            _message.value = if (ok) "已恢复到原目录" else "恢复失败"
-            if (ok) {
+            val result = trashRepo.restore(photo, _restoreKeepOriginalDate.value)
+            _message.value = if (result != null) "已恢复到原目录" else "恢复失败"
+            if (result != null) {
+                // 软删除项：原图从未删，取消隐藏即可让它原样回到相册（id/uri/日期全保留）
+                if (result.wasSoftDelete && result.originalUri.isNotBlank()) {
+                    setHiddenPhotoUris(_hiddenPhotoUris.value - result.originalUri)
+                }
                 refreshTrash()
                 refresh()
             }
@@ -444,16 +476,41 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     fun restoreTrashBatch(photos: List<Photo>) {
         if (photos.isEmpty()) return
         viewModelScope.launch {
-            val n = trashRepo.restoreBatch(photos, _restoreKeepOriginalDate.value)
-            _message.value = if (n > 0) "已恢复 $n 张到原目录" else "恢复失败"
-            if (n > 0) {
+            val result = trashRepo.restoreBatch(photos, _restoreKeepOriginalDate.value)
+            _message.value = if (result.count > 0) "已恢复 ${result.count} 张到原目录" else "恢复失败"
+            if (result.count > 0) {
+                if (result.unhideUris.isNotEmpty()) {
+                    setHiddenPhotoUris(_hiddenPhotoUris.value - result.unhideUris.toSet())
+                }
                 refreshTrash()
                 refresh()
             }
         }
     }
 
+    /**
+     * 回收站彻底删除：这里才真正调系统删除。
+     * 软删除项的原图仍在 MediaStore，先用系统确认弹窗删掉原图，确认后再清备份；
+     * 老式硬删除项（原图早已不在）直接清备份即可。
+     */
     fun deleteTrashForever(photos: List<Photo>) {
+        if (photos.isEmpty()) return
+        val softUris = trashRepo.softDeleteUris(photos)
+        val sender = if (softUris.isNotEmpty()) repo.createSystemDeleteRequest(softUris) else null
+        pendingForeverPhotos = photos
+        if (sender != null) {
+            _deleteRequest.value = SystemDeleteRequest(sender, ++deleteRequestId)
+        } else {
+            // 无软删除原图（或系统弹窗拉不起）：直接清备份
+            finishTrashForever()
+        }
+    }
+
+    private var pendingForeverPhotos: List<Photo> = emptyList()
+
+    private fun finishTrashForever() {
+        val photos = pendingForeverPhotos
+        pendingForeverPhotos = emptyList()
         if (photos.isEmpty()) return
         viewModelScope.launch {
             val n = trashRepo.deleteForever(photos)
@@ -477,61 +534,30 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _viewerDeleteDone = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val viewerDeleteDone: SharedFlow<Unit> = _viewerDeleteDone
 
-    /** 本次删除是否来自看图抽屉：成功后除了刷新，还要通知退出看图 */
-    private var deleteFromViewer = false
-
     /**
-     * 从看图抽屉删除当前这一张：复用系统确认弹窗流程（先备份进最近删除）。
-     * 不走多选模式，直接把待删集合设为这一张。
+     * 从看图抽屉删除当前这一张：软删除（移入最近删除，原图不删、只隐藏）。
+     * 不走多选模式，也不弹系统删除框。
      */
     fun deleteOneFromViewer(photo: Photo) {
-        val targets = listOf(photo)
-        pendingCount = targets.size
-        pendingAll = targets
-        deleteFromViewer = true
         viewModelScope.launch {
-            val backup = trashRepo.backup(targets)
+            val backup = trashRepo.softDelete(listOf(photo))
             if (!backup.ok) {
-                _message.value = "备份失败，已取消删除"
-                pendingCount = 0
-                pendingAll = emptyList()
-                deleteFromViewer = false
+                _deleteToast.value = "删除失败"
                 return@launch
             }
-            pendingTrashNames = backup.names
-            val plan = repo.buildDeletePlan(targets)
-            pendingPrivate = plan.privatePhotos
-            val sender = repo.createSystemDeleteRequest(plan.mediaUris)
-            if (sender != null) {
-                _deleteRequest.value = SystemDeleteRequest(sender, ++deleteRequestId)
-            } else {
-                pendingPrivate = emptyList()
-                doDelete(targets)
-            }
+            setHiddenPhotoUris(_hiddenPhotoUris.value + photo.uri.toString())
+            _deleteToast.value = "已删除 1 张图片"
+            refreshTrash()
+            refresh()
+            _viewerDeleteDone.emit(Unit)
         }
     }
 
     private var deleteRequestId = 0L
 
-    /** 系统弹窗确认后仍需应用自己删的私有文件 */
-    private var pendingPrivate: List<Photo> = emptyList()
-
-    /** 本次待删的全部照片（拉不起系统弹窗时兜底直接删） */
-    private var pendingAll: List<Photo> = emptyList()
-
-    /** 本次删除已写进回收站的备份文件名（用户取消系统弹窗时据此回滚） */
-    private var pendingTrashNames: List<String> = emptyList()
-
-    /** 本次待删总数（用于提示文案） */
-    private var pendingCount: Int = 0
-
     /**
-     * 删除选中的照片。
-     *
-     * MediaStore 里的照片不直接 delete，而是用 MediaStore.createDeleteRequest 生成
-     * 系统确认弹窗（Android 11+ 官方推荐做法）：用户点「删除」后由系统完成删除，
-     * 应用无需 WRITE_EXTERNAL_STORAGE / MANAGE_EXTERNAL_STORAGE，也不会被权限卡住。
-     * 应用私有目录导入的照片不进系统弹窗，确认后顺带删掉。
+     * 删除选中的照片 = 软删除（移入最近删除）：原图不删，只从相册隐藏。
+     * 只有进「最近删除」里彻底删除时，才真正调系统删除。
      */
     fun deleteSelected() {
         val uris = _selectedUris.value
@@ -541,107 +567,41 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             exitSelectionMode()
             return
         }
-        pendingCount = targets.size
-        pendingAll = targets
-
         viewModelScope.launch {
-            // 删除前先把原图备份进回收站；备份失败则整个删除作废，避免"删了找不回"
-            val backup = trashRepo.backup(targets)
+            // 先把原图备份进回收站（字节 + 原图 uri/时间）；备份失败则整个删除作废
+            val backup = trashRepo.softDelete(targets)
             if (!backup.ok) {
-                _message.value = "备份失败，已取消删除"
-                pendingCount = 0
-                pendingAll = emptyList()
+                _deleteToast.value = "删除失败，请重试"
                 exitSelectionMode()
                 return@launch
             }
-            pendingTrashNames = backup.names
-
-            val plan = repo.buildDeletePlan(targets)
-            pendingPrivate = plan.privatePhotos
-            val sender = repo.createSystemDeleteRequest(plan.mediaUris)
-            if (sender != null) {
-                _deleteRequest.value = SystemDeleteRequest(sender, ++deleteRequestId)
-            } else {
-                // 旧系统没有系统删除弹窗：直接删（含 MediaStore 与私有文件）
-                pendingPrivate = emptyList()
-                doDelete(targets)
-            }
+            setHiddenPhotoUris(_hiddenPhotoUris.value + targets.map { it.uri.toString() })
+            _deleteToast.value = "已删除 ${targets.size} 张图片"
+            exitSelectionMode()
+            refreshTrash()
+            refresh()
         }
     }
 
-    /** UI 拉起系统删除弹窗后的回调；confirmed = 用户在系统弹窗里点了删除 */
+    /** UI 拉起系统删除弹窗后的回调；confirmed = 用户在系统弹窗里点了删除。
+     *  现在系统弹窗只用于「最近删除里彻底删除」。 */
     fun onDeleteRequestResult(confirmed: Boolean) {
         _deleteRequest.value = null
-        val priv = pendingPrivate
-        val total = pendingCount
-        pendingPrivate = emptyList()
-        pendingAll = emptyList()
-        val backupNames = pendingTrashNames
-        pendingTrashNames = emptyList()
-        pendingCount = 0
-        if (!confirmed) {
-            // 用户取消：回滚回收站备份，原图保持不动
-            trashRepo.rollback(backupNames)
+        if (confirmed) {
+            // 系统已真正删掉原图，清掉回收站备份与元数据
+            finishTrashForever()
+        } else {
+            // 取消：软删除项原图本就没删，保持回收站状态不变
+            pendingForeverPhotos = emptyList()
             _message.value = "已取消删除"
-            deleteFromViewer = false
-            return
-        }
-        viewModelScope.launch {
-            // 系统已经删掉 MediaStore 里的照片，这里只需清理私有原文件；
-            // 备份留在回收站，随时可恢复。
-            val privOk = repo.deletePrivatePhotos(priv)
-            _message.value =
-                if (priv.isEmpty() || privOk > 0) "已移入最近删除 $total 张"
-                else "已移入最近删除，部分导入文件清理失败"
-            exitSelectionMode()
-            refresh()
-            if (deleteFromViewer) {
-                deleteFromViewer = false
-                _viewerDeleteDone.emit(Unit)
-            }
         }
     }
 
-    /** 系统删除弹窗拉不起来时的兜底（机型阉割 / URI 被拒） */
+    /** 系统删除弹窗拉不起来时的兜底（机型阉割 / URI 被拒）：这里直接清备份并把 toast 告知用户 */
     fun onDeleteRequestUnavailable() {
         _deleteRequest.value = null
-        val all = pendingAll
-        pendingPrivate = emptyList()
-        pendingAll = emptyList()
-        pendingCount = 0
-        doDelete(all)
-    }
-
-    private fun doDelete(targets: List<Photo>) {
-        viewModelScope.launch {
-            if (targets.isEmpty()) {
-                _message.value = "无法调起系统删除"
-                trashRepo.rollback(pendingTrashNames)
-                pendingTrashNames = emptyList()
-                pendingCount = 0
-                exitSelectionMode()
-                return@launch
-            }
-            val ok = repo.deletePhotos(targets)
-            if (ok > 0) {
-                // 真删成功：备份留在回收站
-                _message.value = "已移入最近删除 $ok 张"
-            } else {
-                // 一张都没删掉：回滚备份，提示失败
-                trashRepo.rollback(pendingTrashNames)
-                _message.value = "删除失败（这张照片可能不允许删除）"
-            }
-            pendingTrashNames = emptyList()
-            pendingCount = 0
-            exitSelectionMode()
-            refresh()
-            if (deleteFromViewer && ok > 0) {
-                deleteFromViewer = false
-                _viewerDeleteDone.emit(Unit)
-            } else {
-                deleteFromViewer = false
-            }
-        }
+        _message.value = "无法调起系统删除，原图未删除"
+        pendingForeverPhotos = emptyList()
     }
 
     /**

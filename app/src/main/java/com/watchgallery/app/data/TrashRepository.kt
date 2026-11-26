@@ -64,7 +64,10 @@ class TrashRepository(private val context: Context) {
                     width = o.optInt("width", 0),
                     height = o.optInt("height", 0),
                     // 老数据没有这个字段：退化成删除时间，恢复后至少不会排到很离谱的位置
-                    originalDateAdded = o.optLong("originalDateAdded", o.getLong("deletedAt"))
+                    originalDateAdded = o.optLong("originalDateAdded", o.getLong("deletedAt")),
+                    // 软删除：原图仍在 MediaStore，只是被隐藏；恢复=取消隐藏，彻底删除=系统删原图
+                    softDeleted = o.optBoolean("softDeleted", false),
+                    originalUri = o.optString("originalUri", "")
                 )
             }.toMutableList()
         } catch (_: Exception) {
@@ -84,6 +87,8 @@ class TrashRepository(private val context: Context) {
                 put("width", e.width)
                 put("height", e.height)
                 put("originalDateAdded", e.originalDateAdded)
+                put("softDeleted", e.softDeleted)
+                put("originalUri", e.originalUri)
             })
         }
         prefs.edit().putString("entries", arr.toString()).apply()
@@ -109,8 +114,21 @@ class TrashRepository(private val context: Context) {
                 )
             }
 
-    /** 删除前备份一批照片到私有目录 */
+    /**
+     * 软删除：把照片记入回收站，但**不删原图**（MediaStore 记录与字节都原样保留）。
+     * 仍复制一份字节到私有目录当备份，用于回收站缩略图与「原图在外部被删」时的恢复兜底；
+     * 关键是记下原图 uri 并标记 softDeleted，让恢复走「取消隐藏」而非「重新 insert」。
+     */
+    suspend fun softDelete(photos: List<Photo>): BackupResult = withContext(Dispatchers.IO) {
+        backupInternal(photos, softDelete = true)
+    }
+
+    /** 删除前备份一批照片到私有目录（老式硬删除用） */
     suspend fun backup(photos: List<Photo>): BackupResult = withContext(Dispatchers.IO) {
+        backupInternal(photos, softDelete = false)
+    }
+
+    private suspend fun backupInternal(photos: List<Photo>, softDelete: Boolean): BackupResult = withContext(Dispatchers.IO) {
         if (photos.isEmpty()) return@withContext BackupResult(true, emptyList())
         val entries = loadEntries()
         val now = System.currentTimeMillis()
@@ -140,7 +158,9 @@ class TrashRepository(private val context: Context) {
                     width = photo.width,
                     height = photo.height,
                     // 记住原图时间（相册按它倒序排）；恢复时写回，保持原来的时间顺序
-                    originalDateAdded = photo.dateAdded
+                    originalDateAdded = photo.dateAdded,
+                    softDeleted = softDelete,
+                    originalUri = if (softDelete) photo.uri.toString() else ""
                 )
             } catch (_: Exception) {
                 ok = false
@@ -168,15 +188,23 @@ class TrashRepository(private val context: Context) {
         saveEntries(entries.filterNot { it.backupName in names })
     }
 
+    /** 一次恢复的结果：成功时带回 backupName，以及是否是软删除（VM 据此取消隐藏） */
+    data class RestoreResult(val backupName: String, val wasSoftDelete: Boolean, val originalUri: String)
+
     /**
-     * 恢复一张照片到原目录。返回恢复成功后要移除的 backupName（失败为 null）。
-     * **不在这里写 entries** —— 批量恢复时由 [restoreBatch] 统一写一次，
-     * 避免多协程并发「读-改-写」SharedPreferences 互相覆盖（底部几张恢复不掉的元凶）。
+     * 恢复一张照片。软删除项：原图从未删除，**只需取消隐藏**，不重新 insert；
+     * 老式硬删除项：走原有 insert 流程把备份写回。
+     * **不在这里写 entries** —— 由 [restore] / [restoreBatch] 统一写一次，
+     * 避免多协程并发「读-改-写」SharedPreferences 互相覆盖。
      */
-    private fun restoreOne(photo: Photo, keepOriginalDate: Boolean): String? {
+    private fun restoreOne(photo: Photo, keepOriginalDate: Boolean): RestoreResult? {
         val entry = findEntry(photo) ?: return null
         val backup = File(trashDir, entry.backupName)
         if (!backup.exists()) return null
+        // ── 软删除：原图还在，恢复=取消隐藏，直接标记为成功 ──
+        if (entry.softDeleted && entry.originalUri.isNotBlank()) {
+            return RestoreResult(entry.backupName, true, entry.originalUri)
+        }
         return try {
             val ok = if (entry.originalFolder == Photo.IMPORTED_FOLDER) {
                 // 文件名带 backupName 的唯一后缀，避免同毫秒恢复多张时互相覆盖
@@ -198,36 +226,46 @@ class TrashRepository(private val context: Context) {
             }
             if (ok) {
                 runCatching { backup.delete() }
-                entry.backupName
+                RestoreResult(entry.backupName, false, entry.originalUri)
             } else null
         } catch (_: Exception) {
             null
         }
     }
 
-    /** 恢复单张（外部单张入口） */
-    suspend fun restore(photo: Photo, keepOriginalDate: Boolean = true): Boolean = withContext(Dispatchers.IO) {
-        val name = restoreOne(photo, keepOriginalDate)
-        if (name != null) saveEntries(loadEntries().filterNot { it.backupName == name })
-        name != null
+    /**
+     * 恢复单张，返回成功恢复的条目信息（含哪些是软删除需要 VM 取消隐藏的原图 uri）。
+     * null = 失败。
+     */
+    suspend fun restore(photo: Photo, keepOriginalDate: Boolean = true): RestoreResult? = withContext(Dispatchers.IO) {
+        val result = restoreOne(photo, keepOriginalDate)
+        if (result != null) saveEntries(loadEntries().filterNot { it.backupName == result.backupName })
+        result
     }
+
+    /** 批量恢复结果：成功张数 + 其中需要取消隐藏的原图 uri 列表 */
+    data class BatchRestoreResult(val count: Int, val unhideUris: List<String>)
 
     /**
      * 批量恢复：在单个 IO 协程里串行处理，全部完成后只写一次 entries。
-     * 既消除了并发覆盖，也保证「恢复顺序」不会变成相册里的排序（每张都写回原时间）。
-     * @return 成功恢复的张数
+     * @return 成功张数与需要取消隐藏的软删除原图 uri
      */
-    suspend fun restoreBatch(photos: List<Photo>, keepOriginalDate: Boolean = true): Int = withContext(Dispatchers.IO) {
-        if (photos.isEmpty()) return@withContext 0
-        val restoredNames = HashSet<String>()
-        for (photo in photos) {
-            restoreOne(photo, keepOriginalDate)?.let { restoredNames += it }
+    suspend fun restoreBatch(photos: List<Photo>, keepOriginalDate: Boolean = true): BatchRestoreResult =
+        withContext(Dispatchers.IO) {
+            if (photos.isEmpty()) return@withContext BatchRestoreResult(0, emptyList())
+            val restoredNames = HashSet<String>()
+            val unhide = ArrayList<String>()
+            for (photo in photos) {
+                restoreOne(photo, keepOriginalDate)?.let { r ->
+                    restoredNames += r.backupName
+                    if (r.wasSoftDelete) unhide += r.originalUri
+                }
+            }
+            if (restoredNames.isNotEmpty()) {
+                saveEntries(loadEntries().filterNot { it.backupName in restoredNames })
+            }
+            BatchRestoreResult(restoredNames.size, unhide)
         }
-        if (restoredNames.isNotEmpty()) {
-            saveEntries(loadEntries().filterNot { it.backupName in restoredNames })
-        }
-        restoredNames.size
-    }
 
     private fun insertToMediaStore(entry: TrashEntry, backup: File, keepOriginalDate: Boolean): Uri? {
         val values = ContentValues().apply {
@@ -276,7 +314,11 @@ class TrashRepository(private val context: Context) {
         }
     }
 
-    /** 彻底删除：删备份文件 + 元数据 */
+    /**
+     * 彻底删除：删备份文件 + 元数据。
+     * 对软删除项，原图仍在 MediaStore —— 调用方应先用 [softDeleteUris] 拿原图 uri 走系统删除，
+     * 确认删除成功后（或不走系统删除时）再调这里清备份。
+     */
     suspend fun deleteForever(photos: List<Photo>): Int = withContext(Dispatchers.IO) {
         val names = photos.mapNotNull { findEntry(it)?.backupName }.toSet()
         val entries = loadEntries()
@@ -287,6 +329,19 @@ class TrashRepository(private val context: Context) {
         saveEntries(entries.filterNot { it.backupName in names })
         n
     }
+
+    /** 这些回收站条目里属于软删除的原图 uri（彻底删除时要真正系统删掉的） */
+    fun softDeleteUris(photos: List<Photo>): List<Uri> =
+        photos.mapNotNull { p ->
+            findEntry(p)?.let { e ->
+                if (e.softDeleted && e.originalUri.isNotBlank()) runCatching { Uri.parse(e.originalUri) }.getOrNull()
+                else null
+            }
+        }
+
+    /** 彻底删除系统弹窗被取消：恢复软删除项（它们本就没真删），无需任何改动，返回存在几个软删除项 */
+    fun countSoftDeleted(photos: List<Photo>): Int =
+        photos.count { p -> findEntry(p)?.softDeleted == true }
 
     /** 过期清理，返回清理张数 */
     suspend fun purgeExpired(): Int = withContext(Dispatchers.IO) {
@@ -316,5 +371,13 @@ data class TrashEntry(
     val width: Int,
     val height: Int,
     /** 原图在相册里的时间（秒），恢复时写回以保持原来的时间顺序 */
-    val originalDateAdded: Long = deletedAt
+    val originalDateAdded: Long = deletedAt,
+    /**
+     * true = 软删除：原图仍在 MediaStore，仅从相册隐藏。
+     * 恢复 = 取消隐藏（原图 id/uri/日期全部原样保留）；彻底删除 = 这时才系统删原图。
+     * false = 老式硬删除：原图已被系统删，只剩备份字节，恢复要重新 insert。
+     */
+    val softDeleted: Boolean = false,
+    /** 软删除时记录的原图 content/file uri，恢复与彻底删除时据此定位原图 */
+    val originalUri: String = ""
 )

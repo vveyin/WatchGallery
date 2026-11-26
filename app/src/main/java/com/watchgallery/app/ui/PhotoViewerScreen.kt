@@ -917,7 +917,8 @@ private fun PhotoDetailDialog(
         title = "详细信息",
         cancelLabel = "关闭",
         onCancel = onClose,
-        scrollState = scroll
+        scrollState = scroll,
+        embedded = true   // 留在本 Activity 窗口内，表冠走「表冠适配」双模式解析
     ) {
         DialogLine("名称", photo.displayName)
         DialogLine("尺寸", if (photo.width > 0) "${photo.width} × ${photo.height}" else "—")

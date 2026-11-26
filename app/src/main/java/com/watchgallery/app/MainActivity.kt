@@ -19,6 +19,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.*
@@ -77,6 +79,7 @@ class MainActivity : ComponentActivity() {
         setContent {
             val themeMode by viewModel.themeMode.collectAsState()
             val message by viewModel.message.collectAsState()
+            val deleteToast by viewModel.deleteToast.collectAsState()
             val snackbarHostState = remember { SnackbarHostState() }
             val scope = rememberCoroutineScope()
             var showCrashReport by remember { mutableStateOf(crashedLastTime) }
@@ -85,6 +88,14 @@ class MainActivity : ComponentActivity() {
                 message?.let {
                     scope.launch { snackbarHostState.showSnackbar(it) }
                     viewModel.clearMessage()
+                }
+            }
+
+            // 删除提示：和关于页长按 0o0.site 同款黑药丸 toast，1.6 秒后自动消失
+            LaunchedEffect(deleteToast) {
+                if (deleteToast != null) {
+                    delay(1600)
+                    viewModel.clearDeleteToast()
                 }
             }
 
@@ -250,6 +261,8 @@ private fun AppNavigation(
     snackbarHostState: SnackbarHostState,
     onCrownPrefsChanged: () -> Unit
 ) {
+    // 删除「已删除 N 张图片」黑药丸提示（在 setContent 里定时清除）
+    val deleteToast by viewModel.deleteToast.collectAsState()
     // 导航栈：栈底 Gallery，push 进入 Viewer/Editor/Update，pop 返回。
     // 设置不再是栈中一页，而是常驻抽屉（SettingsDrawer），盖在主界面之上，用垂直手势升降。
     val backStack = remember { mutableStateListOf<Screen>(Screen.Gallery) }
@@ -507,7 +520,14 @@ private fun AppNavigation(
                             if (interactive) { currentPhoto = photo; navigate(Screen.Editor) }
                         },
                         onDelete = { photo ->
-                            if (interactive) viewModel.deleteOneFromViewer(photo)
+                            if (interactive) {
+                                if (viewerUnder is Screen.Trash) {
+                                    // 在最近删除里看图点删除 = 彻底删除（真正调系统删原图）
+                                    viewModel.deleteTrashForever(listOf(photo))
+                                } else {
+                                    viewModel.deleteOneFromViewer(photo)
+                                }
+                            }
                         },
                         onRestore = { photo ->
                             if (interactive) {
@@ -703,6 +723,12 @@ private fun AppNavigation(
         }
 
         SnackbarHost(snackbarHostState, Modifier.align(Alignment.BottomCenter))
+
+        // 删除「已删除 N 张图片」黑药丸提示：关于页同款，位置略高于底部避开弧边
+        InAppToast(
+            message = deleteToast,
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 42.dp)
+        )
     }
     }
 }
