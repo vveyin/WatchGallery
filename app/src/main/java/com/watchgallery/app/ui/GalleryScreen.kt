@@ -894,7 +894,14 @@ internal fun ScalingPhotoList(
                     is PhotoRow.Header -> row.key
                     is PhotoRow.Photo -> row.photo.uri.toString()
                 } },
-                span = { row -> if (row is PhotoRow.Header) GridItemSpan(layoutColumns) else GridItemSpan(1) }
+                // 日期标题跨满整行：必须用 maxLineSpan（当前实际列数），
+                // 不能用 GridItemSpan(layoutColumns) 这个「绝对列数」。
+                // 绝对列数在列数跳变时会和旧的测量结果错位（比如 measure 时是 10 列、
+                // place 时已成 1 列，剩余列数算成负数），LazyGrid 就会把同一个节点
+                // 放进布局两次，抛 IllegalStateException: Place was called on a node
+                // which was placed already —— 也就是「调完每排照片数就闪退」。
+                // maxLineSpan 永远等于当前列数，天然不会错位。
+                span = { row -> if (row is PhotoRow.Header) GridItemSpan(maxLineSpan) else GridItemSpan(1) }
             ) { row ->
               when (row) {
                 is PhotoRow.Header -> {
@@ -944,12 +951,11 @@ internal fun ScalingPhotoList(
                 }
                 Box(
                     modifier = Modifier
-                        // 不要在这里用 animateItemPlacement：设置里改每排列数是「瞬间跳变」
-                        // （捏合才是连续渐变），列数一跳 header 的 span 也跟着变，Compose 1.6.x
-                        // 的位置动画会在 LazyGrid measure 时把同一节点 place 两次，
-                        // 直接抛 IllegalStateException: Place was called on a node which was
-                        // placed already（改完列数停在设置页过几秒闪退）。照片仍有下面的
-                        // appear 淡入放大动画，视觉不受影响。
+                        // 位置动画：捏合缩放改列数时，照片会平滑地挪到新格子里，而不是硬跳。
+                        // v0.83 曾因闪退临时移除，但那次闪退的真正原因是外层 BoxWithConstraints
+                        // （SubcomposeLayout 在测量阶段重入布局），v0.84 换成普通 Box 后已根治，
+                        // 这里恢复动画。
+                        .animateItemPlacement(tween(220, easing = FastOutSlowInEasing))
                         .fillMaxWidth()
                         .aspectRatio(1f)
                         .onGloballyPositioned { coords ->
@@ -1091,7 +1097,8 @@ internal fun ScalingPhotoList(
               } // when
             } // items(photoRows)
             if (hasMore) {
-                item(span = { GridItemSpan(layoutColumns) }, key = "load_more_footer") {
+                // 同上：底部「加载更多」那一行也要跨满当前整行，用 maxLineSpan
+                item(span = { GridItemSpan(maxLineSpan) }, key = "load_more_footer") {
                     Box(
                         Modifier.fillMaxWidth().height(44.dp),
                         contentAlignment = Alignment.Center
