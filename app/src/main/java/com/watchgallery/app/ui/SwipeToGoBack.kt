@@ -90,8 +90,9 @@ fun SwipeBackContainer(
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         if (down.position.x > edgePx) return@awaitEachGesture
-                        down.consume()
-
+                        // 不在按下瞬间 consume：窄屏上第一列照片正落在左缘 26dp 内，
+                        // 立即消费会让这一列的单击完全没反应。改为确认是右划后才
+                        // 在下面 decided 分支里 consume，单击照常传给照片的 onTap。
                         var totalDx = 0f
                         var totalDy = 0f
                         var decided = false
@@ -165,7 +166,8 @@ fun Modifier.swipeBackGesture(
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
             if (down.position.x > edgePx) return@awaitEachGesture
-            down.consume()
+            // 不在按下瞬间 consume：否则左缘照片的单击会被吞、完全没反应。
+            // 确认是右划后再在 decided 分支 consume，单击照常传给照片 onTap。
             var totalDx = 0f
             var totalDy = 0f
             var decided = false

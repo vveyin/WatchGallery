@@ -722,7 +722,10 @@ private fun AppNavigation(
             ) {
                 ScreenLayer(
                     Screen.Trash,
-                    interactive = trashIsFront && swipeOffset.value < 1f
+                    // swipeOffset 只驱动返回时的位移动画，绝不能参与点击门控：
+                    // 右划返回动画期间它可能停在 ≥1f，若作为条件会把回收站所有点击吞掉，
+                    // 表现为「退回最近删除后点任何照片都没反应」。
+                    interactive = trashIsFront
                 )
             }
         }
