@@ -205,8 +205,8 @@ fun UpdateContent(
                     icon = Icons.Filled.NewReleases,
                     title = "发现新版本 v${s.info.versionName}",
                     subtitle = "v$localVer → v${s.info.versionName}",
-                    // 更新说明全部显示：外层是 ScalingScrollColumn，内容再长也能滚动看到
-                    footnote = s.info.releaseNotes.ifBlank { null }
+                    // 更新说明按 Markdown 渲染；外层是 ScalingScrollColumn，内容再长也能滚动看到
+                    releaseNotes = s.info.releaseNotes.ifBlank { null }
                 )
                 is UpdateState.Downloading -> {
                     val percent = if (s.total > 0) {
@@ -282,6 +282,7 @@ private fun StatusCard(
     title: String,
     subtitle: String,
     footnote: String? = null,
+    releaseNotes: String? = null,
     progress: Float? = null,
     loading: Boolean = false,
     isError: Boolean = false
@@ -351,6 +352,24 @@ private fun StatusCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
+                )
+            }
+
+            if (!releaseNotes.isNullOrBlank()) {
+                Spacer(Modifier.height(12.dp))
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.3f))
+                )
+                Spacer(Modifier.height(10.dp))
+                // 更新说明左对齐、按 Markdown 渲染（标题/粗体/列表/链接等）
+                MarkdownText(
+                    markdown = releaseNotes,
+                    modifier = Modifier.fillMaxWidth(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }
