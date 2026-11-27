@@ -650,14 +650,17 @@ fun EditScreen(
 
                 // ── 文本框层：跟图片同一套变换，但组合在**手势层之上**，否则点不中 ──
                 // 这一层整体没有 pointerInput，空白处的事件会穿透到下面的手势层。
-                Box(Modifier.fillMaxSize().clipToBounds()) {
+                // 不裁剪：文字很多时文本框会被撑得高于图片，允许它超出图片边界显示和操作，
+                // 否则超出图片的那截文字会被裁掉、永远看不全。
+                Box(Modifier.fillMaxSize()) {
+                    // 图片框保留固定 size 作为定位参照：文本框的 offset 以它的左上角为原点。
+                    // 固定 size 不会裁剪子项，文本框 wrapContent 高度由文字撑开，可超出本框。
                     Box(
                         Modifier
                             .align(Alignment.Center)
                             .size(with(density) { wpx.toDp() }, with(density) { hpx.toDp() })
                             .graphicsLayer {
-                                // 图片框居中对齐，图层中心就是屏幕中心：
-                                // 放大时以屏幕中心为锚点，而不是跟着图片自己中心跑
+                                // 以屏幕中心为锚点做缩放/平移，跟图片层保持一致
                                 transformOrigin = TransformOrigin(0.5f, 0.5f)
                                 scaleX = zoom
                                 scaleY = zoom
@@ -711,11 +714,13 @@ fun EditScreen(
                                                             if (z != 1f && z.isFinite()) {
                                                                 boxes = boxes.map { b ->
                                                                     if (b.id == box.id) {
+                                                                        // 严格等比：只给字号定一个上下界，宽度用「字号实际变化比例」同比缩放。
+                                                                        // 之前宽度单独 coerceIn，字号到顶/到底后宽度还在变，比例就崩了。
                                                                         val ns = (b.sizePx * z).coerceIn(8f, bmpH * 0.4f)
                                                                         val ratio = ns / b.sizePx
                                                                         b.copy(
                                                                             sizePx = ns,
-                                                                            widthPx = (b.widthPx * ratio).coerceIn(ns * 1.5f, bmpW * 3f)
+                                                                            widthPx = b.widthPx * ratio
                                                                         )
                                                                     } else b
                                                                 }
@@ -1171,38 +1176,37 @@ fun EditScreen(
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .height(with(density) { screenH.toDp() })
-                    .graphicsLayer { translationY = (1f - textDrawer.progress.floatValue) * screenH }
-                    .pointerInput(Unit) {
-                        awaitEachGesture {
-                            val down = awaitFirstDown(requireUnconsumed = false)
-                            awaitDrawerDrag(
-                                state = textDrawer,
-                                down = down,
-                                travelPx = screenH,
-                                slopPx = 8.dp.toPx(),
-                                respectConsumed = true,
-                                // 输入框改成多行后，纵向拖动会被它/滚动容器在 Main pass 先消费，
-                                // 导致抽屉拉不下去。这里在 Initial pass 抢先认领纵向拖动；
-                                // 横向滑动选色时 y 位移≈0 不会 claimed，事件照常传给颜色圆点。
-                                pass = PointerEventPass.Initial
-                            )
-                        }
-                    },
+                    .graphicsLayer { translationY = (1f - textDrawer.progress.floatValue) * screenH },
                 color = if (blurEnabled) Color.Transparent else MaterialTheme.colorScheme.surface,
                 tonalElevation = 0.dp,
                 shape = RoundedCornerShape(topStart = 22.dp, topEnd = 22.dp)
             ) {
+                // 面板改「列表」结构：把手固定、内容区可滚动、按钮钉在底部。
+                // 关键：下拉收起手势只挂在把手上（不再铺满整个面板、也不在 Initial pass 抢事件），
+                // 否则纵向拖动会被它吃掉 → 内容滚不动 → 文字一长就点不到「确定」。
                 Column(
                     Modifier
                         .fillMaxSize()
                         .imePadding()
-                        .verticalScroll(rememberScrollState())
                         .padding(horizontal = 8.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // 把手贴着面板顶边
+                    // 把手贴着面板顶边，下拉只从这儿收起抽屉
                     Box(
-                        Modifier.fillMaxWidth().height(26.dp),
+                        Modifier
+                            .fillMaxWidth()
+                            .height(30.dp)
+                            .pointerInput(Unit) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    awaitDrawerDrag(
+                                        state = textDrawer,
+                                        down = down,
+                                        travelPx = screenH,
+                                        slopPx = 8.dp.toPx()
+                                    )
+                                }
+                            },
                         contentAlignment = Alignment.Center
                     ) {
                         Box(
@@ -1214,6 +1218,14 @@ fun EditScreen(
                         )
                     }
 
+                    // 内容区占满剩余高度并可滚动：文字再多也能一路滚到底
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .fillMaxWidth()
+                            .verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally
+                    ) {
                     Spacer(Modifier.height(8.dp))
                     WatchTextField(
                         value = editing?.text ?: "",
@@ -1338,8 +1350,10 @@ fun EditScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                    } // 内容区（可滚动）到此结束
 
-                    Spacer(Modifier.height(10.dp))
+                    Spacer(Modifier.height(8.dp))
+                    // 按钮钉在面板底部：再长的文字也压不住「确定」
                     Row(
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
