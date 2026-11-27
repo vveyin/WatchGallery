@@ -124,7 +124,7 @@ private val TextColors = listOf<Int>(
     0xFFFDD835.toInt(), 0xFF43A047.toInt(), 0xFF1E88E5.toInt(), 0xFF8E24AA.toInt()
 )
 
-/** 文本框可选的底色（ARGB）：白 / 淡灰 —— 白字压在白底照片上时靠底色撑出可读性 */
+/** 框线与两侧圆点可选的颜色（ARGB）：白 / 淡灰 —— 框内部透明，靠框线勾出文字区域 */
 private val BoxBgColors = listOf<Int>(
     0xFFFFFFFF.toInt(), 0xFFD9D9D9.toInt()
 )
@@ -150,7 +150,7 @@ private data class TextBox(
     val color: Int,
     /** 框宽（原图像素）：决定一行排多少字，超出自动换行；左右手柄拖动可改 */
     val widthPx: Float,
-    /** 文本框底色（ARGB）：白 / 淡灰，铺在文字下面，否则白字压在白底上看不见 */
+    /** 框线与两侧圆点的颜色（ARGB）：白 / 淡灰；框内部透明，只有文字可见 */
     val bgColor: Int = 0xFFFFFFFF.toInt()
 )
 
@@ -674,9 +674,9 @@ fun EditScreen(
                             // 其它框一律不挂手势，点它们不会被改、也不会被带进编辑。
                             val boxEnabled = tool == EditTool.TEXT &&
                                 (editingId == null || editingId == box.id)
-                            // 边框颜色跟着底下的图片亮度走：图亮用灰框、图暗用白框，都是半透明的
-                            val lum = if (selected) luminance(bmp, box) else 0f
-                            val borderColor = if (lum > 0.55f) Color(0x99A0A0A0) else Color(0xCCFFFFFF)
+                            // 框线颜色跟随「框色」选项（白 / 淡灰），内部透明不铺底色，
+                            // 两侧圆点用同一个颜色，切换框色时框与圆点一起变。
+                            val frameColor = Color(box.bgColor)
                             Box(
                                 Modifier
                                     .offset {
@@ -685,11 +685,10 @@ fun EditScreen(
                                             (box.y * sf).roundToInt()
                                         )
                                     }
-                                    // 底色铺在文字下面（白/淡灰），白字压在白底照片上也看得见
-                                    .background(Color(box.bgColor), RoundedCornerShape(3.dp))
+                                    // 内部透明：不铺底色，只有文字可见（框线在选中时由 border 画出）
                                     .then(
                                         if (selected) Modifier
-                                            .border(1.5.dp, borderColor, RoundedCornerShape(3.dp))
+                                            .border(1.5.dp, frameColor, RoundedCornerShape(3.dp))
                                             .padding(2.dp)
                                         else Modifier.padding(2.dp)
                                     )
@@ -797,21 +796,21 @@ fun EditScreen(
                                 // ── 左右边中点的圆手柄：仅选中且可操作时显示 ──
                                 // 拖改宽度（widthPx）；框高不存固定值，随文字折行自动伸展
                                 if (selected && boxEnabled) {
-                                    val handleColor = Color(0xE6FFFFFF)
+                                    // 圆点用与框线相同的颜色（白 / 淡灰），跟着框色一起变
+                                    val handleColor = frameColor
                                     val handleR = 5.dp
                                     val hitR = 14.dp
-                                    val boxWpx = box.widthPx * sf
-                                    // 手柄固定在框顶部附近，而不是「框高一半」——
-                                    // 文字越写越多时框会很高，中点手柄会落到图片/屏幕外，根本点不到。
-                                    val handleTop = with(density) { 16.dp.toPx() }
-
-                                    fun edgeHandle(
-                                        xPx: Float, yPx: Float, axis: Int
-                                    ): Modifier = Modifier
+                                    // 圆点用 Box 的垂直居中对齐，而不是按估算高度手动算 y：
+                                    // 框高随文字折行实时变化时，中点由布局给出，圆点自然跟着上下移动，
+                                    // 且始终在两侧正中（不受中文折行估算误差影响）。
+                                    fun edgeHandle(axis: Int): Modifier = Modifier
                                         .offset {
+                                            // 把命中圆点中心压到框的左/右边缘线上：
+                                            // CenterStart 时圆心在 x=hitR，左移 hitR；
+                                            // CenterEnd 时圆心在 x=W-hitR，右移 hitR。
                                             IntOffset(
-                                                (xPx - hitR.toPx()).roundToInt(),
-                                                (yPx - hitR.toPx()).roundToInt()
+                                                (if (axis == 0) -1 else 1) * hitR.toPx().roundToInt(),
+                                                0
                                             )
                                         }
                                         .size(hitR * 2)
@@ -849,8 +848,8 @@ fun EditScreen(
                                             )
                                         }
 
-                                    Box(edgeHandle(0f, handleTop, 0))
-                                    Box(edgeHandle(boxWpx, handleTop, 1))
+                                    Box(edgeHandle(0).align(Alignment.CenterStart))
+                                    Box(edgeHandle(1).align(Alignment.CenterEnd))
                                 }
                             }
                         }

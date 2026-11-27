@@ -224,18 +224,8 @@ object ImageEditor {
             } else {
                 t.text.split('\n')
             }
-            // 底色：先铺在文字下面，高度随折行后的内容自适应（行数 × 行高），与预览一致
-            if (t.bgColor != 0) {
-                val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                    style = Paint.Style.FILL
-                    color = t.bgColor
-                }
-                val h = lines.size * lineH
-                val r = t.sizePx * 0.12f
-                canvas.drawRoundRect(
-                    t.x, t.y, t.x + (t.widthPx ?: paint.measureText(t.text)), t.y + h, r, r, bgPaint
-                )
-            }
+            // 框内部透明：只烘焙文字，不再铺白/淡灰底色（与编辑页预览一致，所见即所得）。
+            // bgColor 现在只表示编辑时的框线/圆点颜色，不进入成品。
             lines.forEachIndexed { i, line ->
                 // y 是文本框左上角，绘制时换算到基线；超出框高的行继续往下顺延
                 canvas.drawText(line, t.x, t.y + (-paint.ascent()) + i * lineH, paint)
