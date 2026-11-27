@@ -505,15 +505,15 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * 回收站彻底删除：这里才真正调系统删除。
-     * 软删除项的原图仍在 MediaStore，先用系统确认弹窗删掉原图，确认后再清备份；
-     * 老式硬删除项（原图早已不在）直接清备份即可。
+     * 回收站彻底删除：第一次删除时原图已被系统真正删掉，这里只清备份。
+     * 兼容旧版软删除项（原图仍在 MediaStore）：先用系统确认弹窗删原图，再清备份。
      */
     fun deleteTrashForever(photos: List<Photo>) {
         if (photos.isEmpty()) return
         val softUris = trashRepo.softDeleteUris(photos)
         val sender = if (softUris.isNotEmpty()) repo.createSystemDeleteRequest(softUris) else null
         pendingForeverPhotos = photos
+        pendingForeverMode = true
         if (sender != null) {
             _deleteRequest.value = SystemDeleteRequest(sender, ++deleteRequestId)
         } else {
@@ -523,10 +523,13 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private var pendingForeverPhotos: List<Photo> = emptyList()
+    /** 当前系统删除弹窗是否服务于「回收站彻底删除旧软删项」，用于和真删回调分流 */
+    private var pendingForeverMode = false
 
     private fun finishTrashForever() {
         val photos = pendingForeverPhotos
         pendingForeverPhotos = emptyList()
+        pendingForeverMode = false
         if (photos.isEmpty()) return
         viewModelScope.launch {
             val n = trashRepo.deleteForever(photos)
@@ -535,7 +538,7 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ── 删除（走系统确认弹窗）──
+    // ── 删除（第一次删除即真删：先备份，再走系统确认弹窗真删原图）──
 
     /**
      * 系统删除请求。带自增 id 而不是直接放 IntentSender —— 同一次删除可能连续触发，
@@ -550,30 +553,39 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     private val _viewerDeleteDone = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val viewerDeleteDone: SharedFlow<Unit> = _viewerDeleteDone
 
-    /**
-     * 从看图抽屉删除当前这一张：软删除（移入最近删除，原图不删、只隐藏）。
-     * 不走多选模式，也不弹系统删除框。
-     */
-    fun deleteOneFromViewer(photo: Photo) {
-        viewModelScope.launch {
-            val backup = trashRepo.softDelete(listOf(photo))
-            if (!backup.ok) {
-                _deleteToast.value = "删除失败"
-                return@launch
-            }
-            setHiddenPhotoUris(_hiddenPhotoUris.value + photo.uri.toString())
-            _deleteToast.value = "已删除 1 张图片"
-            refreshTrash()
-            refresh()
-            _viewerDeleteDone.emit(Unit)
-        }
-    }
+    /** 本次删除是否来自看图抽屉：成功后除了刷新，还要通知退出看图 */
+    private var deleteFromViewer = false
+    /** 本次待删的全部照片（拉不起系统弹窗时兜底直接删） */
+    private var pendingAll: List<Photo> = emptyList()
+    /** 本次删除已写进回收站的备份文件名（用户取消系统弹窗时据此回滚） */
+    private var pendingTrashNames: List<String> = emptyList()
+    /** 系统弹窗确认后仍需应用自己删的私有文件 */
+    private var pendingPrivate: List<Photo> = emptyList()
+    /** 本次待删总数（用于提示文案） */
+    private var pendingCount: Int = 0
 
     private var deleteRequestId = 0L
 
     /**
-     * 删除选中的照片 = 软删除（移入最近删除）：原图不删，只从相册隐藏。
-     * 只有进「最近删除」里彻底删除时，才真正调系统删除。
+     * 从看图抽屉删除当前这一张：复用系统确认弹窗（先备份进最近删除，再真删原图）。
+     * 不走多选模式，直接把待删集合设为这一张。
+     */
+    fun deleteOneFromViewer(photo: Photo) {
+        val targets = listOf(photo)
+        pendingCount = targets.size
+        pendingAll = targets
+        deleteFromViewer = true
+        startRealDelete(targets)
+    }
+
+    /**
+     * 删除选中的照片：第一次删除就真删原图。
+     *
+     * MediaStore 里的照片不直接 delete，而是用 MediaStore.createDeleteRequest 生成
+     * 系统确认弹窗（Android 11+ 官方推荐）：用户点「删除」后由系统完成删除，
+     * 应用无需 WRITE/MANAGE_EXTERNAL_STORAGE，也不会被权限卡住。
+     * 删除前先把字节备份进回收站（供恢复），用户取消则回滚备份、原图不动。
+     * 应用私有目录导入的照片不进系统弹窗，确认后顺带删掉。
      */
     fun deleteSelected() {
         val uris = _selectedUris.value
@@ -583,41 +595,128 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
             exitSelectionMode()
             return
         }
+        pendingCount = targets.size
+        pendingAll = targets
+        startRealDelete(targets)
+    }
+
+    /** 备份 + 生成系统删除弹窗；共用给多选删除和看图抽屉删除。 */
+    private fun startRealDelete(targets: List<Photo>) {
+        pendingForeverMode = false
         viewModelScope.launch {
-            // 先把原图备份进回收站（字节 + 原图 uri/时间）；备份失败则整个删除作废
-            val backup = trashRepo.softDelete(targets)
+            // 删除前先把原图备份进回收站（字节 + 文件名/时间）；备份失败则整个删除作废，
+            // 绝不出现「删了找不回」。真删项的备份 softDeleted=false，恢复时重新 insert。
+            val backup = trashRepo.backup(targets)
             if (!backup.ok) {
-                _deleteToast.value = "删除失败，请重试"
+                _deleteToast.value = "备份失败，已取消删除"
+                pendingCount = 0
+                pendingAll = emptyList()
+                deleteFromViewer = false
                 exitSelectionMode()
                 return@launch
             }
-            setHiddenPhotoUris(_hiddenPhotoUris.value + targets.map { it.uri.toString() })
-            _deleteToast.value = "已删除 ${targets.size} 张图片"
+            pendingTrashNames = backup.names
+            val plan = repo.buildDeletePlan(targets)
+            pendingPrivate = plan.privatePhotos
+            val sender = repo.createSystemDeleteRequest(plan.mediaUris)
+            if (sender != null) {
+                _deleteRequest.value = SystemDeleteRequest(sender, ++deleteRequestId)
+            } else {
+                // 旧系统/无系统弹窗或全是私有图：直接真删（含 MediaStore 与私有文件）
+                pendingPrivate = emptyList()
+                doDelete(targets)
+            }
+        }
+    }
+
+    /** UI 拉起系统删除弹窗后的回调；confirmed = 用户在系统弹窗里点了删除。 */
+    fun onDeleteRequestResult(confirmed: Boolean) {
+        _deleteRequest.value = null
+        // 回收站彻底删除旧软删项：系统已删原图，这里清备份，不走真删流程
+        if (pendingForeverMode) {
+            if (confirmed) finishTrashForever()
+            else {
+                pendingForeverPhotos = emptyList()
+                pendingForeverMode = false
+                _message.value = "已取消删除"
+            }
+            return
+        }
+        val priv = pendingPrivate
+        val total = pendingCount
+        pendingPrivate = emptyList()
+        pendingAll = emptyList()
+        val backupNames = pendingTrashNames
+        pendingTrashNames = emptyList()
+        pendingCount = 0
+        if (!confirmed) {
+            // 用户取消：回滚回收站备份，原图保持不动
+            trashRepo.rollback(backupNames)
+            _deleteToast.value = "已取消删除"
+            deleteFromViewer = false
+            return
+        }
+        viewModelScope.launch {
+            // 系统已经真删掉 MediaStore 里的照片，这里只需清理私有原文件；
+            // 备份留在回收站，随时可恢复。
+            repo.deletePrivatePhotos(priv)
+            _deleteToast.value = "已删除 $total 张图片"
             exitSelectionMode()
             refreshTrash()
             refresh()
+            if (deleteFromViewer) {
+                deleteFromViewer = false
+                _viewerDeleteDone.emit(Unit)
+            }
         }
     }
 
-    /** UI 拉起系统删除弹窗后的回调；confirmed = 用户在系统弹窗里点了删除。
-     *  现在系统弹窗只用于「最近删除里彻底删除」。 */
-    fun onDeleteRequestResult(confirmed: Boolean) {
-        _deleteRequest.value = null
-        if (confirmed) {
-            // 系统已真正删掉原图，清掉回收站备份与元数据
-            finishTrashForever()
-        } else {
-            // 取消：软删除项原图本就没删，保持回收站状态不变
-            pendingForeverPhotos = emptyList()
-            _message.value = "已取消删除"
-        }
-    }
-
-    /** 系统删除弹窗拉不起来时的兜底（机型阉割 / URI 被拒）：这里直接清备份并把 toast 告知用户 */
+    /** 系统删除弹窗拉不起来时的兜底（机型阉割 / URI 被拒）：直接真删。 */
     fun onDeleteRequestUnavailable() {
         _deleteRequest.value = null
-        _message.value = "无法调起系统删除，原图未删除"
-        pendingForeverPhotos = emptyList()
+        // 彻底删除模式弹窗拉不起：没有系统删除能力，原图（旧软删项）删不掉，
+        // 只清备份并提示，避免误走真删逻辑把回收站备份回滚掉。
+        if (pendingForeverMode) {
+            finishTrashForever()
+            return
+        }
+        val all = pendingAll
+        pendingPrivate = emptyList()
+        pendingAll = emptyList()
+        pendingCount = 0
+        doDelete(all)
+    }
+
+    /** 无系统弹窗时的直接真删兜底；删失败则回滚备份。 */
+    private fun doDelete(targets: List<Photo>) {
+        viewModelScope.launch {
+            if (targets.isEmpty()) {
+                _deleteToast.value = "删除失败"
+                trashRepo.rollback(pendingTrashNames)
+                pendingTrashNames = emptyList()
+                deleteFromViewer = false
+                exitSelectionMode()
+                return@launch
+            }
+            val ok = repo.deletePhotos(targets)
+            if (ok > 0) {
+                // 真删成功：备份留在回收站
+                _deleteToast.value = "已删除 $ok 张图片"
+            } else {
+                // 一张都没删掉：回滚备份，提示失败
+                trashRepo.rollback(pendingTrashNames)
+                _deleteToast.value = "删除失败"
+            }
+            pendingTrashNames = emptyList()
+            pendingCount = 0
+            exitSelectionMode()
+            refreshTrash()
+            refresh()
+            if (deleteFromViewer) {
+                deleteFromViewer = false
+                _viewerDeleteDone.emit(Unit)
+            }
+        }
     }
 
     /**

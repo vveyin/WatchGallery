@@ -34,6 +34,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentSize
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
@@ -455,18 +456,7 @@ fun EditScreen(
                             modifier = Modifier.fillMaxSize()
                         )
 
-                        // 涂鸦层：始终叠加显示（不烘焙进预览图）
-                        if (strokes.isNotEmpty()) {
-                            Canvas(Modifier.fillMaxSize()) {
-                                strokes.forEach { s ->
-                                    for (i in 1 until s.points.size) {
-                                        val a = Offset(s.points[i - 1].x * sf, s.points[i - 1].y * sf)
-                                        val b = Offset(s.points[i].x * sf, s.points[i].y * sf)
-                                        drawLine(Color(s.color), a, b, strokeWidth = s.width * sf)
-                                    }
-                                }
-                            }
-                        }
+                        // 涂鸦层已移到不裁剪的变换层（见下方文本框层），这样画到图片外的笔画也能显示
 
                         // 裁剪框
                         val cr = cropRect
@@ -586,8 +576,11 @@ fun EditScreen(
                                                 )
                                             }
                                             tool == EditTool.DRAW -> {
-                                                val x = bp.x.coerceIn(0f, bmpW.toFloat())
-                                                val y = bp.y.coerceIn(0f, bmpH.toFloat())
+                                                // 不再 clamp 到图片内：手在图片外画，笔画点照常记录真实坐标。
+                                                // 超出图片的笔画在预览里能看到（涂鸦层已移出裁剪框），
+                                                // 保存时由 ImageEditor 的 clipRect 裁掉图片外部分。
+                                                val x = bp.x
+                                                val y = bp.y
                                                 if (!strokeStarted) {
                                                     strokes = strokes + DrawStroke(
                                                         listOf(PointF(x, y)),
@@ -668,6 +661,21 @@ fun EditScreen(
                                 translationY = pan.y
                             }
                     ) {
+                        // 涂鸦层：放在不裁剪的参照框里，与图片同一套变换/坐标。
+                        // 之前放在图片框内被 clipToBounds + 圆角裁掉，手在图片外画的笔画看不见。
+                        // 现在超出图片的笔画照常显示；保存时由 ImageEditor.clipRect 裁掉图片外部分。
+                        if (strokes.isNotEmpty()) {
+                            Canvas(Modifier.fillMaxSize()) {
+                                strokes.forEach { s ->
+                                    for (i in 1 until s.points.size) {
+                                        val a = Offset(s.points[i - 1].x * sf, s.points[i - 1].y * sf)
+                                        val b = Offset(s.points[i].x * sf, s.points[i].y * sf)
+                                        drawLine(Color(s.color), a, b, strokeWidth = s.width * sf)
+                                    }
+                                }
+                            }
+                        }
+
                         boxes.forEach { box ->
                             val focused = box.id == editingId
                             // 单击选中、双击进入输入的框都显示边框
@@ -682,6 +690,11 @@ fun EditScreen(
                             val frameColor = Color(box.bgColor)
                             Box(
                                 Modifier
+                                    // 解除参照框 size(wpx,hpx) 施加的 maxWidth/maxHeight 约束：
+                                    // 之前 Column 的宽度被卡在图片宽、Text 的高度被卡在图片高，
+                                    // 于是文字撑不高、右边圆点也在图片右缘就"拉不动"了。
+                                    // unbounded 让内容按真实尺寸测量，超出图片照样显示与操作。
+                                    .wrapContentSize(Alignment.TopStart, unbounded = true)
                                     .offset {
                                         IntOffset(
                                             (box.x * sf).roundToInt(),
@@ -746,10 +759,10 @@ fun EditScreen(
                                                             selectedBoxId = box.id
                                                             boxes = boxes.map { b ->
                                                                 if (b.id == box.id) b.copy(
-                                                                    // 允许框移到图片/屏幕外：不再 clamp 到图片内，
-                                                                    // 只留一个宽松边界防止彻底拖丢（超出图片一倍宽）
-                                                                    x = (b.x + frameDelta.x / sf).coerceIn(-bmpW.toFloat(), bmpW * 2f),
-                                                                    y = (b.y + frameDelta.y / sf).coerceIn(-bmpH.toFloat(), bmpH * 2f)
+                                                                    // 允许框自由移到图片/屏幕外：边界放到图片尺寸的很多倍，
+                                                                    // 只防止数值彻底拖丢，不再卡在图片边缘
+                                                                    x = (b.x + frameDelta.x / sf).coerceIn(-bmpW * 8f, bmpW * 8f),
+                                                                    y = (b.y + frameDelta.y / sf).coerceIn(-bmpH * 8f, bmpH * 8f)
                                                                 ) else b
                                                             }
                                                             c.consume()
@@ -827,18 +840,19 @@ fun EditScreen(
                                                     boxes = boxes.map { b ->
                                                         if (b.id != box.id) b else when (axis) {
                                                             // 左边手柄：改宽度同时右移左边，右边界固定。
-                                                            // 放宽到可移出图片：下界允许到图片外一倍宽，只保留最小宽度约束。
+                                                            // 不再用图片宽做边界——框可以拉到图片/屏幕外，只保留一个
+                                                            // 极宽的防失控上限和"最小宽度"约束即可。
                                                             0 -> {
                                                                 val right = b.x + b.widthPx
                                                                 val nx = (b.x + amount.x / sf)
-                                                                    .coerceIn(-bmpW.toFloat(), right - b.sizePx * 2f)
+                                                                    .coerceIn(-bmpW * 8f, right - b.sizePx * 2f)
                                                                 b.copy(x = nx, widthPx = right - nx)
                                                             }
-                                                            // 右边手柄：只改宽度，左边界固定，上界放宽到图片外，
-                                                            // 这样文字很多时也能继续把框拉宽，而不是卡在图片右缘。
+                                                            // 右边手柄：只改宽度，左边界固定。上限放到图片宽的
+                                                            // 很多倍（不再卡在 bmpW*3），文字再多也能把框拉宽到图片外。
                                                             else -> b.copy(
                                                                 widthPx = (b.widthPx + amount.x / sf)
-                                                                    .coerceIn(b.sizePx * 2f, bmpW * 3f)
+                                                                    .coerceIn(b.sizePx * 2f, bmpW * 8f)
                                                             )
                                                         }
                                                     }
