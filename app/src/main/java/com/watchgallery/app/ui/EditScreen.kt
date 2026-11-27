@@ -700,7 +700,6 @@ fun EditScreen(
                                                 val tapSlop = 6.dp.toPx()
                                                 awaitEachGesture {
                                                     val down = awaitFirstDown(requireUnconsumed = true)
-                                                    var lastPos = down.position
                                                     var travel = 0f
                                                     var pinching = false
                                                     var consumedElsewhere = false
@@ -717,13 +716,12 @@ fun EditScreen(
                                                                         val ratio = ns / b.sizePx
                                                                         b.copy(
                                                                             sizePx = ns,
-                                                                            widthPx = (b.widthPx * ratio).coerceIn(ns * 1.5f, bmpW.toFloat())
+                                                                            widthPx = (b.widthPx * ratio).coerceIn(ns * 1.5f, bmpW * 3f)
                                                                         )
                                                                     } else b
                                                                 }
                                                             }
                                                             ev.changes.forEach { it.consume() }
-                                                            lastPos = ev.changes.first().position
                                                             continue
                                                         }
                                                         if (pinching) continue
@@ -732,15 +730,22 @@ fun EditScreen(
                                                             consumedElsewhere = true
                                                             break
                                                         }
-                                                        val delta = c.position - lastPos
-                                                        lastPos = c.position
-                                                        travel += delta.getDistance()
+                                                        // 抽搐根因：pointerInput 挂在这个会移动的框上，c.position 是
+                                                        // 「相对框自身左上角」的局部坐标。框每移动一帧，下一帧的局部坐标基准
+                                                        // 就跟着偏移；用跨帧保存的 lastPos 相减，delta 会正负交替 → 走走停停。
+                                                        // 改用同一事件内的 position - previousPosition：这两个都基于框当前
+                                                        // 坐标系，差值就是这帧手指的真实位移，与框自身位置无关（Compose 官方
+                                                        // detectDragGestures 正是这么算 dragAmount 的）。
+                                                        val frameDelta = c.position - c.previousPosition
+                                                        travel += frameDelta.getDistance()
                                                         if (travel > tapSlop) {
                                                             selectedBoxId = box.id
                                                             boxes = boxes.map { b ->
                                                                 if (b.id == box.id) b.copy(
-                                                                    x = (b.x + delta.x / sf).coerceIn(0f, bmpW.toFloat()),
-                                                                    y = (b.y + delta.y / sf).coerceIn(0f, bmpH.toFloat())
+                                                                    // 允许框移到图片/屏幕外：不再 clamp 到图片内，
+                                                                    // 只留一个宽松边界防止彻底拖丢（超出图片一倍宽）
+                                                                    x = (b.x + frameDelta.x / sf).coerceIn(-bmpW.toFloat(), bmpW * 2f),
+                                                                    y = (b.y + frameDelta.y / sf).coerceIn(-bmpH.toFloat(), bmpH * 2f)
                                                                 ) else b
                                                             }
                                                             c.consume()
@@ -796,7 +801,9 @@ fun EditScreen(
                                     val handleR = 5.dp
                                     val hitR = 14.dp
                                     val boxWpx = box.widthPx * sf
-                                    val boxHpx = estimateBoxHeight(box) * sf
+                                    // 手柄固定在框顶部附近，而不是「框高一半」——
+                                    // 文字越写越多时框会很高，中点手柄会落到图片/屏幕外，根本点不到。
+                                    val handleTop = with(density) { 16.dp.toPx() }
 
                                     fun edgeHandle(
                                         xPx: Float, yPx: Float, axis: Int
@@ -815,16 +822,19 @@ fun EditScreen(
                                                     change.consume()
                                                     boxes = boxes.map { b ->
                                                         if (b.id != box.id) b else when (axis) {
-                                                            // 左边中点：改宽度同时右移左边，右边界固定
+                                                            // 左边手柄：改宽度同时右移左边，右边界固定。
+                                                            // 放宽到可移出图片：下界允许到图片外一倍宽，只保留最小宽度约束。
                                                             0 -> {
                                                                 val right = b.x + b.widthPx
-                                                                val nx = (b.x + amount.x / sf).coerceIn(0f, right - b.sizePx * 2f)
+                                                                val nx = (b.x + amount.x / sf)
+                                                                    .coerceIn(-bmpW.toFloat(), right - b.sizePx * 2f)
                                                                 b.copy(x = nx, widthPx = right - nx)
                                                             }
-                                                            // 右边中点：只改宽度，左边界固定
+                                                            // 右边手柄：只改宽度，左边界固定，上界放宽到图片外，
+                                                            // 这样文字很多时也能继续把框拉宽，而不是卡在图片右缘。
                                                             else -> b.copy(
                                                                 widthPx = (b.widthPx + amount.x / sf)
-                                                                    .coerceIn(b.sizePx * 2f, bmpW - b.x)
+                                                                    .coerceIn(b.sizePx * 2f, bmpW * 3f)
                                                             )
                                                         }
                                                     }
@@ -839,8 +849,8 @@ fun EditScreen(
                                             )
                                         }
 
-                                    Box(edgeHandle(0f, boxHpx / 2f, 0))
-                                    Box(edgeHandle(boxWpx, boxHpx / 2f, 1))
+                                    Box(edgeHandle(0f, handleTop, 0))
+                                    Box(edgeHandle(boxWpx, handleTop, 1))
                                 }
                             }
                         }

@@ -205,6 +205,9 @@ object ImageEditor {
         if (texts.isEmpty()) return source
         val result = source.copy(source.config ?: Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(result)
+        // 文本框可以移到图片/屏幕外自由编辑；超出图片边界的内容一律不烘焙进成品。
+        // clipRect 同时裁掉底色圆角矩形和文字笔画（包括负坐标、半截出界的字）。
+        canvas.clipRect(0f, 0f, source.width.toFloat(), source.height.toFloat())
         val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.FILL
         }
