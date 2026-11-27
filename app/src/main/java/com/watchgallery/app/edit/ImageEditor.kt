@@ -45,7 +45,9 @@ data class TextStamp(
     val y: Float,
     val text: String,
     val sizePx: Float,
-    val color: Int
+    val color: Int,
+    /** 文本框的宽度（原图像素）。null = 旧格式：按不换行单行绘制 */
+    val widthPx: Float? = null
 )
 
 object ImageEditor {
@@ -196,7 +198,7 @@ object ImageEditor {
         return result
     }
 
-    /** 在 Bitmap 上绘制文本框（与编辑页预览同一套坐标：左上角 + 字号，单位都是原图像素） */
+    /** 在 Bitmap 上绘制文本框（与编辑页预览同一套坐标：左上角 + 字号 + 框宽，单位都是原图像素） */
     fun drawTexts(source: Bitmap, texts: List<TextStamp>): Bitmap {
         if (texts.isEmpty()) return source
         val result = source.copy(source.config ?: Bitmap.Config.ARGB_8888, true)
@@ -208,14 +210,34 @@ object ImageEditor {
             if (t.text.isBlank()) continue
             paint.textSize = t.sizePx
             paint.color = t.color
-            val lines = t.text.split('\n')
             val lineH = t.sizePx * 1.25f
+            // widthPx 有值：按框宽自动折行（和预览一致）；旧格式：不折行，只认手动 \n
+            val lines = if (t.widthPx != null && t.widthPx > 0f) {
+                val out = mutableListOf<String>()
+                for (para in t.text.split('\n')) out += wrapLine(para, paint, t.widthPx)
+                out
+            } else {
+                t.text.split('\n')
+            }
             lines.forEachIndexed { i, line ->
-                // y 是文本框左上角，绘制时换算到基线
+                // y 是文本框左上角，绘制时换算到基线；超出框高的行继续往下顺延
                 canvas.drawText(line, t.x, t.y + (-paint.ascent()) + i * lineH, paint)
             }
         }
         return result
+    }
+
+    /** 按最大宽度把一段文字折成多行（中英文混排都按像素宽度断行） */
+    private fun wrapLine(text: String, paint: Paint, maxWidth: Float): List<String> {
+        if (text.isEmpty()) return listOf("")
+        val out = mutableListOf<String>()
+        var start = 0
+        while (start < text.length) {
+            val n = paint.breakText(text, start, text.length, true, maxWidth, null).coerceAtLeast(1)
+            out += text.substring(start, start + n)
+            start += n
+        }
+        return out
     }
 
     /** 生成缩略图，避免大图占用过多内存 */

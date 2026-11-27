@@ -28,6 +28,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -77,6 +78,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
@@ -132,11 +134,17 @@ private const val EDIT_MAX_SCALE = 12f
  */
 private data class TextBox(
     val id: Int,
+    /** 左上角（原图像素） */
     val x: Float,
     val y: Float,
     val text: String,
+    /** 字号（原图像素） */
     val sizePx: Float,
-    val color: Int
+    val color: Int,
+    /** 框宽（原图像素）：决定一行排多少字，超出自动换行 */
+    val widthPx: Float,
+    /** 框高（原图像素）：四边手柄可拖动；文字超出时往下顺延，不受它裁剪 */
+    val heightPx: Float
 )
 
 /**
@@ -184,6 +192,9 @@ fun EditScreen(
     /** 只选中（显示边框）但不进入输入的框：单击选中，双击才进输入抽屉 */
     var selectedBoxId by remember { mutableStateOf<Int?>(null) }
     var nextBoxId by remember { mutableIntStateOf(1) }
+    /** 双击手势记录：上一次轻点的时间与框 id（用于区分单击选中 / 双击进输入） */
+    var lastTapTime by remember { mutableStateOf(0L) }
+    var lastTapBoxId by remember { mutableIntStateOf(-1) }
 
     // 文本框输入抽屉：进入输入时弹起，确定/取消/拉下时收起
     val textDrawer = rememberDrawerState(false)
@@ -259,7 +270,7 @@ fun EditScreen(
         val bmp = sourceBitmap ?: return
         saving = true
         val stamps = boxes.filter { it.text.isNotBlank() }.map {
-            TextStamp(it.x, it.y, it.text, it.sizePx, it.color)
+            TextStamp(it.x, it.y, it.text, it.sizePx, it.color, it.widthPx)
         }
         viewModel.saveEditedImage(
             bmp, adjustments, rotation, flipH, flipV,
@@ -505,9 +516,11 @@ fun EditScreen(
                                     val bp = toBitmap(down.position)
                                     boxes.any { b ->
                                         val chars = b.text.length.coerceAtLeast(1)
-                                        val w = (b.sizePx * 0.62f * chars).coerceAtLeast(b.sizePx)
-                                        val h = b.sizePx * 1.3f
-                                        bp.x >= b.x && bp.x <= b.x + w &&
+                                        // 高度按实际折行数算（换行后的框可能比 heightPx 高）
+                                        val cpl = (b.widthPx / (b.sizePx * 0.62f)).toInt().coerceAtLeast(1)
+                                        val lines = chars / cpl + 1
+                                        val h = maxOf(b.heightPx, lines * b.sizePx * 1.25f)
+                                        bp.x >= b.x && bp.x <= b.x + b.widthPx &&
                                             bp.y >= b.y && bp.y <= b.y + h
                                     }
                                 }
@@ -524,6 +537,11 @@ fun EditScreen(
                                             strokeStarted = false
                                         }
                                         pinch = true
+                                        // 起手点在文本框上：双指交给文本框层缩放它自己，图片不跟着缩放
+                                        if (onBox) {
+                                            e.changes.forEach { it.consume() }
+                                            continue
+                                        }
                                         val z = e.calculateZoom()
                                         if (z != 1f) setZoom(zoom * z)
                                         val p = e.calculatePan()
@@ -597,11 +615,16 @@ fun EditScreen(
                                         val size = (bmpH * 0.075f).coerceIn(18f, 120f)
                                         val id = nextBoxId++
                                         val lum = luminance(bmp, x, y, size)
+                                        // 默认框宽取图宽的四成左右，保证一开始就能排下一句话
+                                        val defW = (bmpW * 0.4f).coerceIn(size * 4f, bmpW.toFloat())
+                                        val defH = size * 1.4f
                                         boxes = boxes + TextBox(
                                             id = id, x = x, y = y, text = "",
                                             sizePx = size,
                                             color = if (lum > 0.55f) android.graphics.Color.BLACK
-                                            else android.graphics.Color.WHITE
+                                            else android.graphics.Color.WHITE,
+                                            widthPx = defW,
+                                            heightPx = defH
                                         )
                                         editOrigin = ""
                                         editingId = id
@@ -654,52 +677,166 @@ fun EditScreen(
                                     )
                                     .then(
                                         if (tool == EditTool.TEXT) Modifier
-                                            // 单击：只选中（亮边框）；双击：进入输入抽屉
-                                            .pointerInput(box.id) {
-                                                detectTapGestures(
-                                                    onTap = {
-                                                        if (editingId != null && editingId != box.id) blurBox()
-                                                        selectedBoxId = box.id
-                                                    },
-                                                    onDoubleTap = {
-                                                        if (editingId != null && editingId != box.id) blurBox()
-                                                        selectedBoxId = box.id
-                                                        editOrigin = box.text
-                                                        editingId = box.id
-                                                    }
-                                                )
-                                            }
-                                            // 拖动：跟着手指走，坐标换算回原图像素
-                                            .pointerInput(box.id, bmpW, bmpH) {
-                                                detectDragGestures(
-                                                    onDragStart = { selectedBoxId = box.id },
-                                                    onDrag = { change, amount ->
-                                                        change.consume()
-                                                        boxes = boxes.map {
-                                                            if (it.id == box.id) it.copy(
-                                                                x = (it.x + amount.x / sf).coerceIn(0f, bmpW.toFloat()),
-                                                                y = (it.y + amount.y / sf).coerceIn(0f, bmpH.toFloat())
-                                                            ) else it
+                                            // 一个手势入口统一处理：单击选中 / 双击输入 / 单指移动 / 双指捏合缩放
+                                            .pointerInput(box.id, sf) {
+                                                val tapSlop = 6.dp.toPx()
+                                                awaitEachGesture {
+                                                    val down = awaitFirstDown(requireUnconsumed = true)
+                                                    var lastPos = down.position
+                                                    var travel = 0f
+                                                    var pinching = false
+                                                    var consumedElsewhere = false
+                                                    while (true) {
+                                                        val ev = awaitPointerEvent()
+                                                        if (ev.changes.count { it.pressed } == 0) break
+                                                        if (ev.changes.count { it.pressed } >= 2) {
+                                                            pinching = true
+                                                            val z = ev.calculateZoom()
+                                                            if (z != 1f && z.isFinite()) {
+                                                                boxes = boxes.map { b ->
+                                                                    if (b.id == box.id) {
+                                                                        val ns = (b.sizePx * z).coerceIn(8f, bmpH * 0.4f)
+                                                                        val ratio = ns / b.sizePx
+                                                                        b.copy(
+                                                                            sizePx = ns,
+                                                                            widthPx = (b.widthPx * ratio).coerceIn(ns * 1.5f, bmpW.toFloat()),
+                                                                            heightPx = (b.heightPx * ratio).coerceIn(ns, bmpH.toFloat())
+                                                                        )
+                                                                    } else b
+                                                                }
+                                                            }
+                                                            ev.changes.forEach { it.consume() }
+                                                            lastPos = ev.changes.first().position
+                                                            continue
+                                                        }
+                                                        if (pinching) continue
+                                                        val c = ev.changes.firstOrNull { it.id == down.id } ?: break
+                                                        if (c.isConsumed) {
+                                                            consumedElsewhere = true
+                                                            break
+                                                        }
+                                                        val delta = c.position - lastPos
+                                                        lastPos = c.position
+                                                        travel += delta.getDistance()
+                                                        if (travel > tapSlop) {
+                                                            selectedBoxId = box.id
+                                                            boxes = boxes.map { b ->
+                                                                if (b.id == box.id) b.copy(
+                                                                    x = (b.x + delta.x / sf).coerceIn(0f, bmpW.toFloat()),
+                                                                    y = (b.y + delta.y / sf).coerceIn(0f, bmpH.toFloat())
+                                                                ) else b
+                                                            }
+                                                            c.consume()
                                                         }
                                                     }
-                                                )
+                                                    if (!pinching && !consumedElsewhere && travel < tapSlop) {
+                                                        val now = System.currentTimeMillis()
+                                                        if (box.id == lastTapBoxId && now - lastTapTime < 320L) {
+                                                            if (editingId != null && editingId != box.id) blurBox()
+                                                            selectedBoxId = box.id
+                                                            editOrigin = box.text
+                                                            editingId = box.id
+                                                            lastTapTime = 0L
+                                                            lastTapBoxId = -1
+                                                        } else {
+                                                            if (editingId != null && editingId != box.id) blurBox()
+                                                            selectedBoxId = box.id
+                                                            lastTapTime = now
+                                                            lastTapBoxId = box.id
+                                                        }
+                                                    }
+                                                }
                                             }
                                         else Modifier
                                     )
                             ) {
-                                Text(
-                                    text = box.text.ifBlank { if (focused) "输入文字…" else " " },
-                                    style = TextStyle(
-                                        color = if (box.text.isBlank() && focused) {
-                                            Color(0x88FFFFFF)
-                                        } else {
-                                            Color(box.color)
-                                        },
-                                        fontSize = with(density) { (box.sizePx * sf).toSp() },
-                                        fontWeight = FontWeight.Medium
-                                    ),
-                                    maxLines = 6
-                                )
+                                Column(
+                                    Modifier.width(with(density) { (box.widthPx * sf).toDp() })
+                                ) {
+                                    Text(
+                                        text = box.text.ifBlank { if (focused) "输入文字…" else " " },
+                                        style = TextStyle(
+                                            color = if (box.text.isBlank() && focused) {
+                                                Color(0x88FFFFFF)
+                                            } else {
+                                                Color(box.color)
+                                            },
+                                            fontSize = with(density) { (box.sizePx * sf).toSp() },
+                                            lineHeight = with(density) { (box.sizePx * sf * 1.25f).toSp() },
+                                            fontWeight = FontWeight.Medium
+                                        ),
+                                        softWrap = true,
+                                        // 不限制行数：文字在当前宽度下自动折行，超出就往下顺延
+                                        maxLines = Int.MAX_VALUE
+                                    )
+                                }
+
+                                // ── 四边中点的圆手柄：仅选中时显示 ──
+                                // 左右边中点：拖改宽度（widthPx）；上下边中点：拖改高度（heightPx）
+                                if (selected && tool == EditTool.TEXT) {
+                                    val handleColor = Color(0xE6FFFFFF)
+                                    val handleR = 5.dp
+                                    val hitR = 14.dp
+                                    val boxWpx = box.widthPx * sf
+                                    val boxHpx = maxOf(box.heightPx, box.sizePx * 1.25f) * sf
+
+                                    fun edgeHandle(
+                                        xPx: Float, yPx: Float, axis: Int
+                                    ): Modifier = Modifier
+                                        .offset {
+                                            IntOffset(
+                                                (xPx - hitR.toPx()).roundToInt(),
+                                                (yPx - hitR.toPx()).roundToInt()
+                                            )
+                                        }
+                                        .size(hitR * 2)
+                                        .pointerInput(box.id, axis, sf) {
+                                            detectDragGestures(
+                                                onDragStart = { selectedBoxId = box.id },
+                                                onDrag = { change, amount ->
+                                                    change.consume()
+                                                    boxes = boxes.map { b ->
+                                                        if (b.id != box.id) b else when (axis) {
+                                                            // 左边中点：改宽度同时右移左边，右边界固定
+                                                            0 -> {
+                                                                val right = b.x + b.widthPx
+                                                                val nx = (b.x + amount.x / sf).coerceIn(0f, right - b.sizePx * 2f)
+                                                                b.copy(x = nx, widthPx = right - nx)
+                                                            }
+                                                            // 右边中点：只改宽度，左边界固定
+                                                            1 -> b.copy(
+                                                                widthPx = (b.widthPx + amount.x / sf)
+                                                                    .coerceIn(b.sizePx * 2f, bmpW - b.x)
+                                                            )
+                                                            // 上边中点：改高度同时下移顶边，底边界固定
+                                                            2 -> {
+                                                                val bottom = b.y + b.heightPx
+                                                                val ny = (b.y + amount.y / sf).coerceIn(0f, bottom - b.sizePx)
+                                                                b.copy(y = ny, heightPx = bottom - ny)
+                                                            }
+                                                            // 下边中点：只改高度，顶边界固定
+                                                            else -> b.copy(
+                                                                heightPx = (b.heightPx + amount.y / sf)
+                                                                    .coerceIn(b.sizePx, bmpH - b.y)
+                                                            )
+                                                            }
+                                                        }
+                                                    }
+                                                )
+                                            }
+                                        .drawBehind {
+                                            drawCircle(
+                                                color = handleColor,
+                                                radius = handleR.toPx(),
+                                                center = center
+                                            )
+                                        }
+
+                                    Box(edgeHandle(0f, boxHpx / 2f, 0))
+                                    Box(edgeHandle(boxWpx, boxHpx / 2f, 1))
+                                    Box(edgeHandle(boxWpx / 2f, 0f, 2))
+                                    Box(edgeHandle(boxWpx / 2f, boxHpx, 3))
+                                }
                             }
                         }
                     }
@@ -1065,7 +1202,10 @@ fun EditScreen(
                         onValueChange = { v ->
                             val id = editingId ?: return@WatchTextField
                             boxes = boxes.map { if (it.id == id) it.copy(text = v) else it }
-                        }
+                        },
+                        // 不限制字数：多行输入，可换行，内容自动在框宽内折行
+                        singleLine = false,
+                        modifier = Modifier.heightIn(min = 56.dp, max = 132.dp)
                     )
 
                     // ── 文字颜色 ──
@@ -1178,7 +1318,7 @@ fun EditScreen(
  * 只取几十个点，主线程上算不会卡。
  */
 private fun luminance(bmp: Bitmap, box: TextBox): Float =
-    luminance(bmp, box.x, box.y, box.sizePx, box.text.length.coerceAtLeast(1))
+    luminance(bmp, box.x, box.y, box.sizePx, (box.widthPx / box.sizePx).toInt().coerceAtLeast(1))
 
 private fun luminance(bmp: Bitmap, x: Float, y: Float, sizePx: Float, chars: Int = 1): Float {
     val w = (sizePx * 0.62f * chars).coerceAtLeast(sizePx).coerceAtMost(bmp.width.toFloat())
