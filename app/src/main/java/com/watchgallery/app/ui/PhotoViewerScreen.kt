@@ -232,13 +232,20 @@ fun PhotoViewerScreen(
     fun zoomCap(): Float = maxZoomFor(photos.getOrNull(index), screenWpxTop, screenHpxTop)
 
     /**
+     * 缩小下限：默认 scale=1（铺满屏幕）；圆屏上允许再缩到整图（含四角）完整落在圆内。
+     * 方屏返回 1，保持原样不能更小。
+     */
+    fun minZoom(): Float = minZoomFor(photos.getOrNull(index), screenWpxTop, screenHpxTop, isRound)
+
+    /**
      * 缩放改变后重新收一次平移量。
      *
      * 放大时边界只会变大，不用管；缩小时边界会收窄，如果原本已经把图推到边上，
      * 这里把它收回允许范围，图不会突然「掉」到屏幕外。
+     * 缩到下限（整图完整可见）时图片居中、不允许平移。
      */
     fun reclampOffset() {
-        if (scale <= 1.0001f) {
+        if (scale <= minZoom() + 0.0001f) {
             offset = Offset.Zero
             return
         }
@@ -258,10 +265,12 @@ fun PhotoViewerScreen(
      * 平移过之后再放大就会「飘走」，看着像是以图片自己的中心在放大。
      */
     fun setScale(target: Float) {
-        val s = target.coerceIn(1f, zoomCap())
+        val lo = minZoom()
+        val s = target.coerceIn(lo, zoomCap())
         if (s == scale) return
-        if (s <= 1.0001f) {
-            scale = 1f
+        // 缩到下限：整图完整可见，居中、不平移（方屏 lo=1 时等同原来的复位到 1）
+        if (s <= lo + 0.0001f) {
+            scale = lo
             offset = Offset.Zero
             return
         }
@@ -530,7 +539,7 @@ fun PhotoViewerScreen(
                                     contentScale = ContentScale.Fit,
                                     modifier = Modifier
                                         .fillMaxSize()
-                                    .graphicsLayer {
+                                        .graphicsLayer {
                                         // 锚点固定在**屏幕中心**：图片在层里是居中 Fit 的，
                                         // 图层中心就是屏幕中心，缩放时中间那一点始终不动
                                         transformOrigin = TransformOrigin(0.5f, 0.5f)
@@ -1066,13 +1075,44 @@ private const val OVERSCROLL = 0.10f
  * 平移边界必须按它算，不能按整块屏幕算：一张 4000×1000 的全景图在方屏上只占
  * 450×112，用屏幕高度当边界的话，能被推出上边框一整屏 —— 图片直接拖没了。
  */
-private fun fitContentSize(photo: Photo?, screenW: Int, screenH: Int): Pair<Float, Float> {
+private fun fitContentSize(
+    photo: Photo?, screenW: Int, screenH: Int
+): Pair<Float, Float> {
     val sw = screenW.coerceAtLeast(1).toFloat()
     val sh = screenH.coerceAtLeast(1).toFloat()
     val iw = if (photo != null && photo.width > 0) photo.width.toFloat() else sw
     val ih = if (photo != null && photo.height > 0) photo.height.toFloat() else sh
     val k = minOf(sw / iw, sh / ih)
     return iw * k to ih * k
+}
+
+/**
+ * 缩小下限（相对「铺满屏幕」的 scale=1 而言），只影响圆屏。
+ *
+ * 默认 scale=1 时图片按整屏 Fit 铺满（保持原样），圆屏四角会被圆边缘裁掉。
+ * 允许继续缩小到这个下限：图片按「屏幕内接圆的最大内接矩形」完整显示，四角都落在圆内。
+ * 方屏本来就能完整显示，下限 = 1（不允许缩得更小）。
+ *
+ * 算法与编辑页 fitLargest 一致；由于两种 Fit 都是等比缩放，
+ * minZoom = 内接矩形尺寸 / 整屏 Fit 尺寸，与图片本身长宽比无关地保持等比。
+ */
+private fun minZoomFor(photo: Photo?, screenW: Int, screenH: Int, isRound: Boolean): Float {
+    if (!isRound) return 1f
+    val sw = screenW.coerceAtLeast(1).toFloat()
+    val sh = screenH.coerceAtLeast(1).toFloat()
+    val iw = if (photo != null && photo.width > 0) photo.width.toFloat() else sw
+    val ih = if (photo != null && photo.height > 0) photo.height.toFloat() else sh
+    val (fullW, fullH) = fitContentSize(photo, screenW, screenH)
+    val a = iw / ih
+    val r = minOf(sw, sh) / 2f * 0.99f
+    var rh = 2f * r / sqrt(a * a + 1f)
+    var rw = rh * a
+    if (rw > sw || rh > sh) {
+        val s = minOf(sw / rw, sh / rh)
+        rw *= s
+        rh *= s
+    }
+    return minOf(rw / fullW, rh / fullH).coerceIn(0.5f, 1f)
 }
 
 /**
@@ -1083,7 +1123,9 @@ private fun fitContentSize(photo: Photo?, screenW: Int, screenH: Int): Pair<Floa
  *  - 再各加 [OVERSCROLL] 的余量，图片可以被推出去一点，松手后停在那儿；
  *  - 推到头就硬停，不会出现「一滑图片就不见了」。
  */
-private fun clampOffset(o: Offset, scale: Float, screen: IntSize, photo: Photo?): Offset {
+private fun clampOffset(
+    o: Offset, scale: Float, screen: IntSize, photo: Photo?
+): Offset {
     val (cw, ch) = fitContentSize(photo, screen.width, screen.height)
     val slack = minOf(screen.width, screen.height) * OVERSCROLL
     val maxX = maxOf(0f, (cw * scale - screen.width) / 2f) + slack

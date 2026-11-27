@@ -456,7 +456,20 @@ fun EditScreen(
                             modifier = Modifier.fillMaxSize()
                         )
 
-                        // 涂鸦层已移到不裁剪的变换层（见下方文本框层），这样画到图片外的笔画也能显示
+                        // 涂鸦层：画在被裁剪的图片框内（圆角 clip + 外层 clipToBounds），
+                        // 超出图片的部分自动裁掉、不显示。但笔画坐标仍是真实轨迹（手势层不 clamp），
+                        // 所以「从图内画到外面再画回图内」是一整笔连续操作，撤销一次全撤。
+                        if (strokes.isNotEmpty()) {
+                            Canvas(Modifier.fillMaxSize()) {
+                                strokes.forEach { s ->
+                                    for (i in 1 until s.points.size) {
+                                        val a = Offset(s.points[i - 1].x * sf, s.points[i - 1].y * sf)
+                                        val b = Offset(s.points[i].x * sf, s.points[i].y * sf)
+                                        drawLine(Color(s.color), a, b, strokeWidth = s.width * sf)
+                                    }
+                                }
+                            }
+                        }
 
                         // 裁剪框
                         val cr = cropRect
@@ -661,21 +674,6 @@ fun EditScreen(
                                 translationY = pan.y
                             }
                     ) {
-                        // 涂鸦层：放在不裁剪的参照框里，与图片同一套变换/坐标。
-                        // 之前放在图片框内被 clipToBounds + 圆角裁掉，手在图片外画的笔画看不见。
-                        // 现在超出图片的笔画照常显示；保存时由 ImageEditor.clipRect 裁掉图片外部分。
-                        if (strokes.isNotEmpty()) {
-                            Canvas(Modifier.fillMaxSize()) {
-                                strokes.forEach { s ->
-                                    for (i in 1 until s.points.size) {
-                                        val a = Offset(s.points[i - 1].x * sf, s.points[i - 1].y * sf)
-                                        val b = Offset(s.points[i].x * sf, s.points[i].y * sf)
-                                        drawLine(Color(s.color), a, b, strokeWidth = s.width * sf)
-                                    }
-                                }
-                            }
-                        }
-
                         boxes.forEach { box ->
                             val focused = box.id == editingId
                             // 单击选中、双击进入输入的框都显示边框
