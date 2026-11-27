@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.PointerInputChange
 import kotlin.math.abs
 
@@ -172,6 +173,8 @@ fun DrawerSettle(state: DrawerState, onSettled: (open: Boolean) -> Unit = {}) {
  * 而同一帧里两个坐标过的是同一个层变换，相减后变换被抵消，剩下的就是屏幕位移。
  *
  * @param travelPx 走完 0→1 需要的手指行程（px）。全屏面板就是屏高，1:1 跟手。
+ * @param pass 在哪个阶段读事件。默认 Main（子先父后）；文本抽屉里有滚动容器 +
+ *   多行输入框会先消费纵向拖动，需传 [PointerEventPass.Initial]（父先子后）抢在子节点前认领。
  */
 internal suspend fun AwaitPointerEventScope.awaitDrawerDrag(
     state: DrawerState,
@@ -179,14 +182,15 @@ internal suspend fun AwaitPointerEventScope.awaitDrawerDrag(
     travelPx: Float,
     slopPx: Float,
     onClaimed: () -> Unit = {},
-    respectConsumed: Boolean = false
+    respectConsumed: Boolean = false,
+    pass: PointerEventPass = PointerEventPass.Main
 ) {
     if (!state.beginDrag()) return
     var total = 0f
     var claimed = false
     try {
         while (true) {
-            val event = awaitPointerEvent()
+            val event = awaitPointerEvent(pass)
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
             // 认领之前发现事件已被子手势消费（如滑动选色），抽屉让位
             if (respectConsumed && !claimed && change.isConsumed) break

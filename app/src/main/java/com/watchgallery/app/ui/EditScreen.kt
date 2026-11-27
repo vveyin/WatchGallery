@@ -86,6 +86,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke as DrawStrokeStyle
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
@@ -521,10 +522,13 @@ fun EditScreen(
                                 val onBox = tool == EditTool.TEXT && run {
                                     val bp = toBitmap(down.position)
                                     boxes.any { b ->
-                                        // 高度随文字自适应：按折行数估算内容高度
-                                        val h = estimateBoxHeight(b)
-                                        bp.x >= b.x && bp.x <= b.x + b.widthPx &&
-                                            bp.y >= b.y && bp.y <= b.y + h
+                                        // 中间态只把当前编辑框当作「框」，其它框照常走图片手势
+                                        (editingId == null || editingId == b.id) && run {
+                                            // 高度随文字自适应：按折行数估算内容高度
+                                            val h = estimateBoxHeight(b)
+                                            bp.x >= b.x && bp.x <= b.x + b.widthPx &&
+                                                bp.y >= b.y && bp.y <= b.y + h
+                                        }
                                     }
                                 }
 
@@ -631,6 +635,10 @@ fun EditScreen(
                                         )
                                         editOrigin = ""
                                         editingId = id
+                                    } else if (editingId != null) {
+                                        // 中间态：抽屉已拉下，点空白不结束编辑 —— 既不是取消也不是确定，
+                                        // 保持当前框选中，可继续操作它或从底部白线把输入抽屉拉回来
+                                        selectedBoxId = editingId
                                     } else {
                                         blurBox()
                                         selectedBoxId = null
@@ -661,6 +669,11 @@ fun EditScreen(
                             val focused = box.id == editingId
                             // 单击选中、双击进入输入的框都显示边框
                             val selected = focused || box.id == selectedBoxId
+                            // 中间态门控：某个框正在编辑（editingId 非空）时，
+                            // 只有它自己可操作（拉下抽屉后能直接拖/捏/双击重新打开输入）；
+                            // 其它框一律不挂手势，点它们不会被改、也不会被带进编辑。
+                            val boxEnabled = tool == EditTool.TEXT &&
+                                (editingId == null || editingId == box.id)
                             // 边框颜色跟着底下的图片亮度走：图亮用灰框、图暗用白框，都是半透明的
                             val lum = if (selected) luminance(bmp, box) else 0f
                             val borderColor = if (lum > 0.55f) Color(0x99A0A0A0) else Color(0xCCFFFFFF)
@@ -681,7 +694,7 @@ fun EditScreen(
                                         else Modifier.padding(2.dp)
                                     )
                                     .then(
-                                        if (tool == EditTool.TEXT) Modifier
+                                        if (boxEnabled) Modifier
                                             // 一个手势入口统一处理：单击选中 / 双击输入 / 单指移动 / 双指捏合缩放
                                             .pointerInput(box.id, sf) {
                                                 val tapSlop = 6.dp.toPx()
@@ -736,14 +749,15 @@ fun EditScreen(
                                                     if (!pinching && !consumedElsewhere && travel < tapSlop) {
                                                         val now = System.currentTimeMillis()
                                                         if (box.id == lastTapBoxId && now - lastTapTime < 320L) {
-                                                            if (editingId != null && editingId != box.id) blurBox()
                                                             selectedBoxId = box.id
                                                             editOrigin = box.text
                                                             editingId = box.id
+                                                            // 拉下抽屉的中间态下 editingId 已是本框、值没变，
+                                                            // LaunchedEffect 不会重触发，这里显式把输入抽屉拉回来
+                                                            textDrawer.open()
                                                             lastTapTime = 0L
                                                             lastTapBoxId = -1
                                                         } else {
-                                                            if (editingId != null && editingId != box.id) blurBox()
                                                             selectedBoxId = box.id
                                                             lastTapTime = now
                                                             lastTapBoxId = box.id
@@ -775,9 +789,9 @@ fun EditScreen(
                                     )
                                 }
 
-                                // ── 左右边中点的圆手柄：仅选中时显示 ──
+                                // ── 左右边中点的圆手柄：仅选中且可操作时显示 ──
                                 // 拖改宽度（widthPx）；框高不存固定值，随文字折行自动伸展
-                                if (selected && tool == EditTool.TEXT) {
+                                if (selected && boxEnabled) {
                                     val handleColor = Color(0xE6FFFFFF)
                                     val handleR = 5.dp
                                     val hitR = 14.dp
@@ -1157,7 +1171,11 @@ fun EditScreen(
                                 down = down,
                                 travelPx = screenH,
                                 slopPx = 8.dp.toPx(),
-                                respectConsumed = true
+                                respectConsumed = true,
+                                // 输入框改成多行后，纵向拖动会被它/滚动容器在 Main pass 先消费，
+                                // 导致抽屉拉不下去。这里在 Initial pass 抢先认领纵向拖动；
+                                // 横向滑动选色时 y 位移≈0 不会 claimed，事件照常传给颜色圆点。
+                                pass = PointerEventPass.Initial
                             )
                         }
                     },
