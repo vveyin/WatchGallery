@@ -177,6 +177,12 @@ class MainActivity : ComponentActivity() {
             CrownMode.HUAWEI_SAMSUNG -> huaweiSamsungRaw(event)
         }
         if (raw == 0f) return 0f
+        // 表冠停下瞬间的反向微小抖动过滤（raw 原始量级，在乘灵敏度之前判断，与灵敏度无关）。
+        // 这种抖动在列表滚动时只有一两像素、看不出来；但缩放是累加式的（scale + delta*0.01），
+        // 触到下限后被这点反向增量顶离下限，看起来就是「缩到最小又弹回来」。
+        // OPPO 正常一格 raw 是十几到几十，编码器模式一格 raw=15（已乘放大系数）；
+        // 死区远小于一格，不误伤正常转动。
+        if (abs(raw) < CROWN_JITTER_DEADZONE) return 0f
         val scaled = raw * crownSpeed
         return if (scaled.isFinite()) scaled else 0f
     }
@@ -238,6 +244,12 @@ class MainActivity : ComponentActivity() {
     private companion object {
         /** 旋转编码器一格 = 1.0，OPPO REL_WHEEL 一格是十几到几十，放大 15 倍拉齐手感 */
         const val ROTARY_RAW_SCALE = 15f
+
+        /**
+         * 表冠抖动死区（raw 原始量级）：滤掉停下瞬间的反向微小增量，避免缩放到下限后被顶离。
+         * 抖动 |raw| ≤ 2，正常一格 ≥ 15（编码器）/ 十几（OPPO），取 3f 只挡抖动不误伤。
+         */
+        const val CROWN_JITTER_DEADZONE = 3f
 
         /** AXIS_SCROLL 是 API 26+ 常量，低版本不列（编译期内联为字面量，但框架不认这个轴） */
         val SCROLL_AXES: IntArray = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

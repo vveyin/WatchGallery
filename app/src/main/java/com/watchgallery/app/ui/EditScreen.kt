@@ -82,6 +82,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke as DrawStrokeStyle
@@ -446,7 +447,9 @@ fun EditScreen(
                                 translationX = pan.x
                                 translationY = pan.y
                             }
-                            .clip(RoundedCornerShape(10.dp))
+                            // 方角：不用圆角，否则四角那块方形区域画不到；
+                            // 仍保留矩形裁剪，把涂鸦超出图片的部分裁掉不显示。
+                            .clip(RectangleShape)
                             .background(Color.Black)
                     ) {
                         Image(
@@ -456,7 +459,7 @@ fun EditScreen(
                             modifier = Modifier.fillMaxSize()
                         )
 
-                        // 涂鸦层：画在被裁剪的图片框内（圆角 clip + 外层 clipToBounds），
+                        // 涂鸦层：画在被裁剪的图片框内（方角矩形 clip + 外层 clipToBounds），
                         // 超出图片的部分自动裁掉、不显示。但笔画坐标仍是真实轨迹（手势层不 clamp），
                         // 所以「从图内画到外面再画回图内」是一整笔连续操作，撤销一次全撤。
                         if (strokes.isNotEmpty()) {
