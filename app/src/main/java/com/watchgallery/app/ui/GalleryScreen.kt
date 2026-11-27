@@ -1066,7 +1066,6 @@ internal fun ScalingPhotoList(
                                             onLongPress(photo.uri.toString())
                                         },
                                         onTap = {
-                                            CrashLogger.log(context, "DBG cell.onTap fired uri=${photo.uri}")
                                             // 记下这张缩略图在屏幕上的位置：大图页会从这里放大展开
                                             onRecordOrigin(
                                                 cellRects[photo.uri.toString()],
