@@ -123,6 +123,12 @@ private val TextColors = listOf<Int>(
     0xFFFDD835.toInt(), 0xFF43A047.toInt(), 0xFF1E88E5.toInt(), 0xFF8E24AA.toInt()
 )
 
+/** 文本框可选的底色（ARGB）：白 / 淡灰 —— 白字压在白底照片上时靠底色撑出可读性 */
+private val BoxBgColors = listOf<Int>(
+    0xFFFFFFFF.toInt(), 0xFFD9D9D9.toInt()
+)
+private val BoxBgLabels = listOf("白", "淡灰")
+
 /** 读不到图片尺寸时的兜底放大上限（正常情况下按屏幕像素现算，见 [maxZoom]），原 6f 的两倍 */
 private const val EDIT_MAX_SCALE = 12f
 
@@ -141,10 +147,10 @@ private data class TextBox(
     /** 字号（原图像素） */
     val sizePx: Float,
     val color: Int,
-    /** 框宽（原图像素）：决定一行排多少字，超出自动换行 */
+    /** 框宽（原图像素）：决定一行排多少字，超出自动换行；左右手柄拖动可改 */
     val widthPx: Float,
-    /** 框高（原图像素）：四边手柄可拖动；文字超出时往下顺延，不受它裁剪 */
-    val heightPx: Float
+    /** 文本框底色（ARGB）：白 / 淡灰，铺在文字下面，否则白字压在白底上看不见 */
+    val bgColor: Int = 0xFFFFFFFF.toInt()
 )
 
 /**
@@ -270,7 +276,7 @@ fun EditScreen(
         val bmp = sourceBitmap ?: return
         saving = true
         val stamps = boxes.filter { it.text.isNotBlank() }.map {
-            TextStamp(it.x, it.y, it.text, it.sizePx, it.color, it.widthPx)
+            TextStamp(it.x, it.y, it.text, it.sizePx, it.color, it.widthPx, it.bgColor)
         }
         viewModel.saveEditedImage(
             bmp, adjustments, rotation, flipH, flipV,
@@ -515,11 +521,8 @@ fun EditScreen(
                                 val onBox = tool == EditTool.TEXT && run {
                                     val bp = toBitmap(down.position)
                                     boxes.any { b ->
-                                        val chars = b.text.length.coerceAtLeast(1)
-                                        // 高度按实际折行数算（换行后的框可能比 heightPx 高）
-                                        val cpl = (b.widthPx / (b.sizePx * 0.62f)).toInt().coerceAtLeast(1)
-                                        val lines = chars / cpl + 1
-                                        val h = maxOf(b.heightPx, lines * b.sizePx * 1.25f)
+                                        // 高度随文字自适应：按折行数估算内容高度
+                                        val h = estimateBoxHeight(b)
                                         bp.x >= b.x && bp.x <= b.x + b.widthPx &&
                                             bp.y >= b.y && bp.y <= b.y + h
                                     }
@@ -615,16 +618,16 @@ fun EditScreen(
                                         val size = (bmpH * 0.075f).coerceIn(18f, 120f)
                                         val id = nextBoxId++
                                         val lum = luminance(bmp, x, y, size)
-                                        // 默认框宽取图宽的四成左右，保证一开始就能排下一句话
+                                        // 默认框宽取图宽的四成左右，保证一开始就能排下一句话；
+                                        // 高度不用存——随文字折行自动伸展
                                         val defW = (bmpW * 0.4f).coerceIn(size * 4f, bmpW.toFloat())
-                                        val defH = size * 1.4f
                                         boxes = boxes + TextBox(
                                             id = id, x = x, y = y, text = "",
                                             sizePx = size,
                                             color = if (lum > 0.55f) android.graphics.Color.BLACK
                                             else android.graphics.Color.WHITE,
                                             widthPx = defW,
-                                            heightPx = defH
+                                            bgColor = android.graphics.Color.WHITE
                                         )
                                         editOrigin = ""
                                         editingId = id
@@ -669,6 +672,8 @@ fun EditScreen(
                                             (box.y * sf).roundToInt()
                                         )
                                     }
+                                    // 底色铺在文字下面（白/淡灰），白字压在白底照片上也看得见
+                                    .background(Color(box.bgColor), RoundedCornerShape(3.dp))
                                     .then(
                                         if (selected) Modifier
                                             .border(1.5.dp, borderColor, RoundedCornerShape(3.dp))
@@ -699,8 +704,7 @@ fun EditScreen(
                                                                         val ratio = ns / b.sizePx
                                                                         b.copy(
                                                                             sizePx = ns,
-                                                                            widthPx = (b.widthPx * ratio).coerceIn(ns * 1.5f, bmpW.toFloat()),
-                                                                            heightPx = (b.heightPx * ratio).coerceIn(ns, bmpH.toFloat())
+                                                                            widthPx = (b.widthPx * ratio).coerceIn(ns * 1.5f, bmpW.toFloat())
                                                                         )
                                                                     } else b
                                                                 }
@@ -771,14 +775,14 @@ fun EditScreen(
                                     )
                                 }
 
-                                // ── 四边中点的圆手柄：仅选中时显示 ──
-                                // 左右边中点：拖改宽度（widthPx）；上下边中点：拖改高度（heightPx）
+                                // ── 左右边中点的圆手柄：仅选中时显示 ──
+                                // 拖改宽度（widthPx）；框高不存固定值，随文字折行自动伸展
                                 if (selected && tool == EditTool.TEXT) {
                                     val handleColor = Color(0xE6FFFFFF)
                                     val handleR = 5.dp
                                     val hitR = 14.dp
                                     val boxWpx = box.widthPx * sf
-                                    val boxHpx = maxOf(box.heightPx, box.sizePx * 1.25f) * sf
+                                    val boxHpx = estimateBoxHeight(box) * sf
 
                                     fun edgeHandle(
                                         xPx: Float, yPx: Float, axis: Int
@@ -804,26 +808,15 @@ fun EditScreen(
                                                                 b.copy(x = nx, widthPx = right - nx)
                                                             }
                                                             // 右边中点：只改宽度，左边界固定
-                                                            1 -> b.copy(
+                                                            else -> b.copy(
                                                                 widthPx = (b.widthPx + amount.x / sf)
                                                                     .coerceIn(b.sizePx * 2f, bmpW - b.x)
                                                             )
-                                                            // 上边中点：改高度同时下移顶边，底边界固定
-                                                            2 -> {
-                                                                val bottom = b.y + b.heightPx
-                                                                val ny = (b.y + amount.y / sf).coerceIn(0f, bottom - b.sizePx)
-                                                                b.copy(y = ny, heightPx = bottom - ny)
-                                                            }
-                                                            // 下边中点：只改高度，顶边界固定
-                                                            else -> b.copy(
-                                                                heightPx = (b.heightPx + amount.y / sf)
-                                                                    .coerceIn(b.sizePx, bmpH - b.y)
-                                                            )
-                                                            }
                                                         }
                                                     }
-                                                )
-                                            }
+                                                }
+                                            )
+                                        }
                                         .drawBehind {
                                             drawCircle(
                                                 color = handleColor,
@@ -834,8 +827,6 @@ fun EditScreen(
 
                                     Box(edgeHandle(0f, boxHpx / 2f, 0))
                                     Box(edgeHandle(boxWpx, boxHpx / 2f, 1))
-                                    Box(edgeHandle(boxWpx / 2f, 0f, 2))
-                                    Box(edgeHandle(boxWpx / 2f, boxHpx, 3))
                                 }
                             }
                         }
@@ -1279,6 +1270,48 @@ fun EditScreen(
                         }
                     }
 
+                    // ── 文本框底色：白 / 淡灰，铺在文字下面保证任何背景上都看得见 ──
+                    Spacer(Modifier.height(8.dp))
+                    fun pickBg(idx: Int) {
+                        val id = editingId ?: return
+                        boxes = boxes.map {
+                            if (it.id == id) it.copy(bgColor = BoxBgColors[idx.coerceIn(0, BoxBgColors.lastIndex)]) else it
+                        }
+                    }
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "底色",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        BoxBgColors.forEachIndexed { ci, c ->
+                            val picked = editing?.bgColor == c
+                            Box(
+                                Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(c))
+                                    .border(
+                                        width = if (picked) 2.dp else 1.dp,
+                                        color = if (picked) MaterialTheme.colorScheme.primary
+                                        else Color.Black.copy(alpha = 0.35f),
+                                        shape = CircleShape
+                                    )
+                                    .clickable { pickBg(ci) }
+                            )
+                        }
+                        // 选项名称，跟在对应圆点后面
+                        Text(
+                            BoxBgLabels.joinToString("  "),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+
                     Spacer(Modifier.height(10.dp))
                     Row(
                         Modifier.fillMaxWidth(),
@@ -1309,6 +1342,18 @@ fun EditScreen(
             }
         }
     }
+}
+
+/**
+ * 估算文本框折行后的内容高度（原图像素）：行数 × 行高（字号 × 1.25）。
+ *
+ * 框高不存固定值，随文字自动伸展；命中测试与手柄定位都用这个估算值，
+ * 换行估算按每行 `宽度 / (字号 × 0.62)` 个字符，与实际渲染足够接近。
+ */
+private fun estimateBoxHeight(b: TextBox): Float {
+    val cpl = (b.widthPx / (b.sizePx * 0.62f)).toInt().coerceAtLeast(1)
+    val lines = b.text.split('\n').sumOf { seg -> seg.length / cpl + 1 }.coerceAtLeast(1)
+    return lines * b.sizePx * 1.25f
 }
 
 /**

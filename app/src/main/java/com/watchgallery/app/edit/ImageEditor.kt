@@ -47,7 +47,9 @@ data class TextStamp(
     val sizePx: Float,
     val color: Int,
     /** 文本框的宽度（原图像素）。null = 旧格式：按不换行单行绘制 */
-    val widthPx: Float? = null
+    val widthPx: Float? = null,
+    /** 文本框底色（ARGB）。0 = 无底色（旧格式兼容），如 0xFFFFFFFF 白、0xFFD6D6D6 淡灰 */
+    val bgColor: Int = 0
 )
 
 object ImageEditor {
@@ -218,6 +220,18 @@ object ImageEditor {
                 out
             } else {
                 t.text.split('\n')
+            }
+            // 底色：先铺在文字下面，高度随折行后的内容自适应（行数 × 行高），与预览一致
+            if (t.bgColor != 0) {
+                val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    style = Paint.Style.FILL
+                    color = t.bgColor
+                }
+                val h = lines.size * lineH
+                val r = t.sizePx * 0.12f
+                canvas.drawRoundRect(
+                    t.x, t.y, t.x + (t.widthPx ?: paint.measureText(t.text)), t.y + h, r, r, bgPaint
+                )
             }
             lines.forEachIndexed { i, line ->
                 // y 是文本框左上角，绘制时换算到基线；超出框高的行继续往下顺延
