@@ -31,6 +31,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Label
 import androidx.compose.material.icons.automirrored.filled.LabelOff
+import androidx.compose.material.icons.automirrored.filled.Undo
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -93,7 +94,9 @@ fun SettingsScreen(
     onCrownPrefsChanged: () -> Unit,
     onSubPageChanged: (Boolean) -> Unit = {},
     onOpenTrash: () -> Unit = {},
-    onOpenLog: () -> Unit = {}
+    onOpenLog: () -> Unit = {},
+    /** 系统返回令牌：父级递增时，若停在二级页就用滑出动画退回一级菜单。 */
+    backTick: Int = 0
 ) {
     var subPage by remember { mutableStateOf<SubPage>(SubPage.Main) }
     LaunchedEffect(subPage) { onSubPageChanged(subPage == SubPage.Main) }
@@ -113,6 +116,17 @@ fun SettingsScreen(
 
         LaunchedEffect(widthPx) {
             if (!offsetX.value.isFinite()) offsetX.snapTo(widthPx)
+        }
+
+        // 系统返回令牌：父级（MainActivity 的 BackHandler）递增时，若停在二级页，
+        // 复用与右划返回完全相同的滑出动画退回一级菜单。首次组合的 0 不算触发。
+        var lastBackTick by remember { mutableIntStateOf(backTick) }
+        LaunchedEffect(backTick) {
+            if (backTick > lastBackTick && subPage != SubPage.Main) {
+                offsetX.animateTo(widthPx, tween(170, easing = FastOutSlowInEasing))
+                subPage = SubPage.Main
+            }
+            lastBackTick = backTick
         }
 
         // 打开二级页：从右侧滑入（一级菜单同步从后面退开）
@@ -298,6 +312,7 @@ private fun SettingsMain(
     val restoreKeepDate by viewModel.restoreKeepOriginalDate.collectAsState()
     val animateGifs by viewModel.animateGifs.collectAsState()
     val blockGestures by viewModel.blockGestures.collectAsState()
+    val useSystemBack by viewModel.useSystemBack.collectAsState()
     val screenShape by viewModel.screenShape.collectAsState()
     val viewMode by viewModel.viewMode.collectAsState()
     val hiddenFolders by viewModel.hiddenFolders.collectAsState()
@@ -380,6 +395,16 @@ private fun SettingsMain(
                     itemKey = "row_gesture"
                 )
             }
+        }
+        item(key = "row_sysback") {
+            SettingButton(
+                icon = Icons.AutoMirrored.Filled.Undo,
+                title = "使用系统返回手势",
+                subtitle = if (useSystemBack) "开 · 中间右划逐层返回，不直接退出软件"
+                else "关 · 恢复系统默认（右划可能直接退出）",
+                onClick = { viewModel.setUseSystemBack(!useSystemBack) },
+                itemKey = "row_sysback"
+            )
         }
 
         // ───────────────── 2. 显示设置 ─────────────────

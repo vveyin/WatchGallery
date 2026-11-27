@@ -10,6 +10,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.animation.core.Animatable
@@ -342,6 +343,9 @@ private fun AppNavigation(
     val settingsDrawer = rememberDrawerState(false)
     var settingsOpen by remember { mutableStateOf(false) }
     var settingsAtRoot by remember { mutableStateOf(true) }  // 设置是否在一级菜单
+    var settingsBackTick by remember { mutableIntStateOf(0) } // 通知设置页「系统返回：退回一级菜单」
+    // 使用系统返回手势（默认开）：接管系统返回键/中间右划，逐层返回而非直接退出软件。
+    val useSystemBack by viewModel.useSystemBack.collectAsState()
 
     // 入场动画只用一次：大图页读到缩略图矩形后就清掉，
     // 之后从编辑页返回时不会再放大一遍（看起来像重新打开）。
@@ -424,6 +428,34 @@ private fun AppNavigation(
         settingsOpen = false
         settingsAtRoot = true
         settingsDrawer.close()
+    }
+
+    // ── 接管系统返回手势（设置项「使用系统返回手势」控制）──
+    //
+    // 背景：部分手表把「屏幕中间右划」识别成系统返回手势。应用若不接管，系统默认行为
+    // 是直接 finish Activity = 退出软件，用户以为「中间右划退出了 App」。开启本项后，
+    // 用 BackHandler 把系统返回接到应用自己的逐层返回逻辑，与左缘右划返回体验一致。
+    //
+    // 优先级：WatchDialog 内嵌模式自带 BackHandler（组合树更靠里），会先于这里消费，
+    // 所以对话框打开时返回先关对话框 —— 这里不需要也不应该抢。
+    //
+    // enabled 条件里刻意排除「栈底相册 + 设置未开」：这种状态没有更深的层可退，
+    // 必须放行给系统，否则用户按返回键将无法退出软件。
+    BackHandler(enabled = useSystemBack && (settingsOpen || backStack.size > 1)) {
+        when {
+            settingsOpen -> {
+                if (settingsAtRoot) {
+                    // 设置一级菜单：收起抽屉
+                    closeSettings()
+                } else {
+                    // 设置二级页：通知设置页用它自己的滑出动画退回一级菜单
+                    settingsBackTick++
+                }
+            }
+            backStack.size > 1 -> {
+                if (backStack.last() is Screen.Trash) onTrashBack() else goBack()
+            }
+        }
     }
 
     val current = backStack.last()
@@ -697,7 +729,8 @@ private fun AppNavigation(
                 onBack = {},
                 onCrownPrefsChanged = onCrownPrefsChanged,
                 onSubPageChanged = { settingsAtRoot = it },
-                onOpenTrash = { openTrash() }
+                onOpenTrash = { openTrash() },
+                backTick = settingsBackTick
             )
         }
 

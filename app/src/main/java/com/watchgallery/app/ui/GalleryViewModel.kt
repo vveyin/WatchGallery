@@ -329,6 +329,22 @@ class GalleryViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
+     * 使用系统返回手势：开启后由应用接管系统的返回事件（BackHandler）。
+     *
+     * 背景：部分手表把「屏幕中间右划」识别成系统返回手势，而系统默认行为是直接
+     * finish 掉 Activity = 退出软件，用户以为「中间右划退出了 App」。开启本项后，
+     * 系统返回统一走应用自己的逐层返回逻辑：大图/编辑/更新 → 上一层，设置二级页 → 一级页，
+     * 栈底（相册）才放行给系统退出。默认开启。
+     */
+    private val _useSystemBack = MutableStateFlow(prefs.getBoolean("use_system_back", true))
+    val useSystemBack: StateFlow<Boolean> = _useSystemBack
+
+    fun setUseSystemBack(on: Boolean) {
+        _useSystemBack.value = on
+        prefs.edit().putBoolean("use_system_back", on).apply()
+    }
+
+    /**
      * 屏幕形状：自动 / 圆屏 / 方屏。
      *
      * 系统 `SCREENLAYOUT_ROUND` 在部分设备上不准；而且圆屏那套「列表中间放大、
