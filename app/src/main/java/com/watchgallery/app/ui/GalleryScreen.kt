@@ -856,7 +856,11 @@ internal fun ScalingPhotoList(
                        else LocalConfiguration.current.screenWidthDp.dp
         val boxHeight = if (listSize.height > 0) with(density) { listSize.height.toDp() }
                         else LocalConfiguration.current.screenHeightDp.dp
-        val edgePad = (boxHeight / 2 - 72.dp).coerceAtLeast(24.dp)
+        // 圆屏：靠大上/下留白把网格推到圆的「内接矩形」可视区，避开上下弧边。
+        // 长屏（手机等方屏）：centerScale=false，不需要这个留白——原来照用圆屏的
+        // 公式算，boxHeight 一大顶部就空出近半屏。改成从顶部开始，只留一点点边距。
+        val edgePad = if (centerScale) (boxHeight / 2 - 72.dp).coerceAtLeast(24.dp)
+                      else 12.dp
         // 关掉 Compose 的过度滚动回弹（stretch/glow）：表冠滚到列表边界时它会把内容
         // 拉出再弹回，表现就是「滚动完向相反方向滚一小段」。f-x 的 Material2 LazyColumn
         // 没有这套效果，这里显式关闭以对齐它的硬停止手感。

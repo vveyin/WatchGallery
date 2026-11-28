@@ -1065,7 +1065,11 @@ fun EditScreen(
                                             else Color.Gray,
                                             CircleShape
                                         )
-                                        .clickable { currentStrokeColor = c }
+                                        // 只认轻点选色：滑动超过 slop 不触发，交给外层 horizontalScroll
+                                        // 滚候选颜色，避免「滑到哪松开就选哪」、颜色行滚不动。
+                                        .pointerInput(c) {
+                                            detectTapGestures(onTap = { currentStrokeColor = c })
+                                        }
                                 )
                             }
                             IconChip(Icons.Filled.Undo) { strokes = strokes.dropLast(1) }
@@ -1255,17 +1259,19 @@ fun EditScreen(
 
                     // ── 文字颜色 ──
                     Spacer(Modifier.height(10.dp))
-                    // 滑动选色的换算步长：一颗圆点 + 间距，手指每滑过这么远换一颗颜色
-                    val colorStep = with(density) { 36.dp.toPx() }
                     fun pickColor(idx: Int) {
                         val id = editingId ?: return
                         boxes = boxes.map {
                             if (it.id == id) it.copy(color = TextColors[idx.coerceIn(0, TextColors.lastIndex)]) else it
                         }
                     }
+                    // 颜色行可左右滑动滚动候选色；只在「点击」（按下抬起同一颗、没滑动）时才选色。
+                    // 原来这里是滑动选色（手指到哪选哪、抬手定色），既不能滚动、又误触，已去掉。
                     Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.CenterHorizontally),
+                        Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
@@ -1286,39 +1292,10 @@ fun EditScreen(
                                         else Color.White.copy(alpha = 0.35f),
                                         shape = CircleShape
                                     )
-                                    // 滑动选色：横向起手后跟着手指走，滑过一颗圆点换一颗颜色；
-                                    // 纵向起手不认领，把事件让给抽屉的拖动 / 滚动
+                                    // 只认轻点：detectTapGestures 在滑动超过 slop 后不会触发 onTap，
+                                    // 横向滑动交给父 Row 的 horizontalScroll 滚候选色，不会误选。
                                     .pointerInput(ci) {
-                                        awaitEachGesture {
-                                            val down = awaitFirstDown(requireUnconsumed = false)
-                                            var totalX = 0f
-                                            var totalY = 0f
-                                            var claimed = false
-                                            val slop = viewConfiguration.touchSlop
-                                            while (true) {
-                                                val ev = awaitPointerEvent()
-                                                val ch = ev.changes.firstOrNull { it.id == down.id } ?: break
-                                                if (!ch.pressed) break
-                                                val dx = ch.position.x - ch.previousPosition.x
-                                                val dy = ch.position.y - ch.previousPosition.y
-                                                totalX += dx
-                                                totalY += dy
-                                                if (!claimed) {
-                                                    if (abs(totalX) > slop && abs(totalX) > abs(totalY)) {
-                                                        claimed = true
-                                                        pickColor(ci)
-                                                    } else if (abs(totalY) > slop) {
-                                                        break   // 纵向手势，让给抽屉
-                                                    }
-                                                    continue
-                                                }
-                                                ch.consume()
-                                                pickColor(ci + (totalX / colorStep).roundToInt())
-                                            }
-                                        }
-                                    }
-                                    .clickable {
-                                        pickColor(ci)
+                                        detectTapGestures(onTap = { pickColor(ci) })
                                     }
                             )
                         }
